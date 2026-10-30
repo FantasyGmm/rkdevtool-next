@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const json = (path) => JSON.parse(read(path));
 const version = json('package.json').version;
 const lock = json('package-lock.json');

@@ -13,6 +13,22 @@
 
 RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
 
+## 界面预览
+
+深色主题 · 演示数据
+
+### 烧录
+
+![RKDevTool Next 烧录页面，展示固件选择、设备详情和运行日志](docs/images/flash.jpg)
+
+### 分区
+
+![RKDevTool Next 分区页面，展示分区列表和分区操作](docs/images/partitions.jpg)
+
+### 高级工具
+
+![RKDevTool Next 高级工具页面，展示设备管理和存储操作](docs/images/advanced.jpg)
+
 ## 下载与安装
 
 到 [Releases](https://github.com/FantasyGmm/rkdevtool-next/releases) 下载与你的电脑匹配的安装包：

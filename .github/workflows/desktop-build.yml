@@ -57,6 +57,8 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
           BUILD_BUNDLES: ${{ matrix.bundles }}
+          # Preserve Finder layout and the packager's 128px icons in CI DMGs.
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
         run: npm run tauri -- build --ci --target "$BUILD_TARGET" --bundles "$BUILD_BUNDLES" -- --locked
       - name: Verify macOS package
         if: runner.os == 'macOS'

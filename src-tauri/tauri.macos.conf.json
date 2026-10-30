@@ -1,6 +1,13 @@
 {
   "bundle": {
     "targets": ["dmg", "app"],
-    "macOS": { "signingIdentity": "-" }
+    "macOS": {
+      "signingIdentity": "-",
+      "dmg": {
+        "windowSize": { "width": 600, "height": 360 },
+        "appPosition": { "x": 160, "y": 150 },
+        "applicationFolderPosition": { "x": 440, "y": 150 }
+      }
+    }
   }
 }

@@ -1,0 +1,134 @@
+name: Desktop build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            bundle-dir: dmg
+            extension: dmg
+            asset-suffix: macos-arm64.dmg
+          - platform: windows-x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            bundle-dir: nsis
+            extension: exe
+            asset-suffix: windows-x64-setup.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check application and release versions
+        run: npm run check:version
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+      - name: Build native installer
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BUILD_BUNDLES: ${{ matrix.bundles }}
+        run: npm run tauri -- build --ci --target "$BUILD_TARGET" --bundles "$BUILD_BUNDLES" -- --locked
+      - name: Verify macOS package
+        if: runner.os == 'macOS'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RK Studio.app"
+          hdiutil verify src-tauri/target/"$BUILD_TARGET"/release/bundle/dmg/*.dmg
+      - name: Collect installer
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BUNDLE_DIR: ${{ matrix.bundle-dir }}
+          PACKAGE_EXT: ${{ matrix.extension }}
+          ASSET_SUFFIX: ${{ matrix.asset-suffix }}
+        run: |
+          version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          shopt -s nullglob
+          files=("src-tauri/target/$BUILD_TARGET/release/bundle/$BUNDLE_DIR/"*."$PACKAGE_EXT")
+          [[ ${#files[@]} -eq 1 ]] || { echo 'Expected exactly one installer' >&2; exit 1; }
+          mkdir -p release
+          cp "${files[0]}" "release/RK-Studio_${version}_${ASSET_SUFFIX}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: RK-Studio-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: RK-Studio-*
+          path: release
+          merge-multiple: true
+      - name: Publish complete installer set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          assets=(
+            "release/RK-Studio_${version}_macos-arm64.dmg"
+            "release/RK-Studio_${version}_windows-x64-setup.exe"
+          )
+          for asset in "${assets[@]}"; do
+            [[ -s "$asset" ]] || { echo "Missing installer: $asset" >&2; exit 1; }
+          done
+          cat > release-notes.md <<'NOTES'
+          ## 下载 / Downloads
+          - **macos-arm64.dmg**：Apple Silicon（M 系列）Mac
+          - **windows-x64-setup.exe**：Windows x64 安装程序
+
+          macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包尚未配置代码签名，系统可能显示安全提示。Windows USB 通信需要目标 Rockusb 接口使用 WinUSB。
+
+          使用与开发板匹配的 Loader 和固件。写入或擦除前备份重要数据。功能、安装和构建说明见仓库 README。
+          NOTES
+          if draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            [[ "$draft" == true ]] || { echo 'Release already published; use a new version instead of replacing it.' >&2; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "RK Studio $RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

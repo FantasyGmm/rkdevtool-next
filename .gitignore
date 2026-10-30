@@ -1,0 +1,30 @@
+upstream/
+work/
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
+*.tsbuildinfo
+
+# Local build records and isolated-environment investigation helpers.
+/BUILD_VALIDATION.md
+/MACOS_VALIDATION.md
+/build-evidence/
+/macos-build-evidence/
+/scripts/CLOUD_BUILD.md
+/scripts/*cloud*.sh
+
+# Local configuration, credentials, firmware and generated installers.
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.img
+*.bin
+*.dmg
+*.exe
+/release/

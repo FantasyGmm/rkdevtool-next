@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RK Studio",
+  "version": "0.1.4",
+  "identifier": "io.rkstudio.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "RK Studio",
+      "width": 900,
+      "height": 680,
+      "minWidth": 780,
+      "minHeight": 600,
+      "decorations": true,
+      "dragDropEnabled": true
+    }],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "targets": ["nsis", "dmg", "app"],
+    "category": "Utility",
+    "shortDescription": "Native Rockchip flashing studio",
+    "copyright": "GPL-3.0-only",
+    "windows": { "nsis": { "displayLanguageSelector": true, "languages": ["SimpChinese", "English"] } },
+    "macOS": { "minimumSystemVersion": "11.0" }
+  }
+}

@@ -2,6 +2,7 @@ use crate::model::{HistoryEntry, OperationEvent, OperationKind};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -9,11 +10,13 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as AsyncMutex;
 
 const HISTORY_LIMIT: usize = 100;
+const REBOOT_TRANSITION: Duration = Duration::from_secs(5);
 
 pub struct ActiveJob {
     pub id: String,
@@ -23,6 +26,7 @@ pub struct ActiveJob {
 pub struct Backend {
     pub usb_gate: Arc<AsyncMutex<()>>,
     pub active: Mutex<Option<ActiveJob>>,
+    expected_reboot_disconnects: AsyncMutex<HashMap<String, Instant>>,
     history: Mutex<Vec<HistoryEntry>>,
     directory: PathBuf,
 }
@@ -56,6 +60,7 @@ impl Backend {
         Ok(Self {
             usb_gate: Arc::new(AsyncMutex::new(())),
             active: Mutex::new(None),
+            expected_reboot_disconnects: AsyncMutex::new(HashMap::new()),
             history: Mutex::new(history),
             directory,
         })
@@ -63,6 +68,22 @@ impl Backend {
 
     pub fn is_busy(&self) -> bool {
         self.active.lock().map(|j| j.is_some()).unwrap_or(true)
+    }
+
+    pub async fn expect_reboot_disconnect(&self, device_id: String) {
+        self.expected_reboot_disconnects
+            .lock()
+            .await
+            .insert(device_id, Instant::now() + REBOOT_TRANSITION);
+    }
+
+    pub async fn rebooting_device_ids(&self, connected_ids: &[&str]) -> Vec<String> {
+        let mut expected = self.expected_reboot_disconnects.lock().await;
+        let now = Instant::now();
+        // Track only this USB incarnation, until it disappears or the grace
+        // period expires. A re-enumerated device must be probed normally.
+        expected.retain(|id, deadline| now < *deadline && connected_ids.contains(&id.as_str()));
+        expected.keys().cloned().collect()
     }
 
     pub fn begin(&self, entry: &HistoryEntry, cancel: Arc<AtomicBool>) -> Result<(), String> {
@@ -100,7 +121,7 @@ impl Backend {
             fs::remove_file(self.directory.join("pending-job.json"))
                 .map_err(|e| format!("任务完成，但恢复记录清理失败：{e}"))
         });
-        // USB ownership is released by the task after its terminal event. The
+        // USB ownership is released by the task before its terminal event. The
         // journal remains recoverable if persisting history failed.
         *self.active.lock().map_err(|_| "任务状态锁异常")? = None;
         result

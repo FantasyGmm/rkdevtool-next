@@ -286,11 +286,7 @@ export async function startDemoWorkflow(
               ? options.archive
                 ? "解压镜像"
                 : "准备写入"
-              : n < (request.verify ? 76 : 96)
-                ? "写入固件"
-                : request.verify
-                  ? "回读校验"
-                  : "写入固件";
+              : "写入固件";
     const bytesTotal =
       request.kind === "loader"
         ? 307200

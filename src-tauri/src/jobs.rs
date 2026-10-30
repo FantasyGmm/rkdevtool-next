@@ -186,8 +186,8 @@ pub async fn prepare(request: OperationRequest) -> Result<Prepared, String> {
         if image.as_ref().is_none_or(|i| i.info.kind != "loader") {
             return Err("请选择 BOOT/LDR 格式的 Rockchip MiniLoader 文件".into());
         }
-        if request.verify || request.reboot {
-            return Err("RAM Loader 下载不支持存储读回校验或自动重启".into());
+        if request.reboot {
+            return Err("RAM Loader 下载不支持自动重启".into());
         }
     }
     if request.kind == OperationKind::Flash && !is_batch && request.archive_member.is_none() {
@@ -366,6 +366,18 @@ pub fn launch(
             prepared.request.kind,
             OperationKind::Flash | OperationKind::Erase
         );
+        if matches!(&result, Ok(Ok(())))
+            && (matches!(
+                prepared.request.kind,
+                OperationKind::Reboot | OperationKind::Maskrom
+            ) || (prepared.request.kind == OperationKind::Flash && prepared.request.reboot))
+        {
+            // A package flash may have reconnected to a different Loader ID.
+            // Record the reset session before releasing USB or emitting success.
+            backend
+                .expect_reboot_disconnect(prepared.target.info.id.clone())
+                .await;
+        }
         let (status, message, level) = match result {
             Ok(Ok(())) => ("completed", match prepared.request.kind {
                 OperationKind::Loader => "Loader 已载入 RAM，设备已进入 Loader 模式".to_string(),
@@ -569,9 +581,6 @@ impl Prepared {
                             sum.checked_add(entry.stamp.0.div_ceil(512) * 512)
                         })
                         .ok_or("批量写入总长度溢出")?;
-                    let total = total
-                        .checked_mul(if self.request.verify { 2 } else { 1 })
-                        .ok_or("批量校验总长度溢出")?;
                     report.phase("writing", "正在批量写入 RAW 镜像", total, 0.0, 100.0);
                     // All files were inspected and all ranges checked before
                     // launch. Recheck every source before the first write.
@@ -591,7 +600,6 @@ impl Prepared {
                             0,
                             entry.stamp.0,
                             entry.start_sector,
-                            self.request.verify,
                             report,
                         )
                         .await?;
@@ -602,20 +610,13 @@ impl Prepared {
                 } else {
                     let size = self.image.as_ref().ok_or("缺少固件信息")?.info.size;
                     let padded = size.div_ceil(512) * 512;
-                    report.phase(
-                        "writing",
-                        "正在写入原始镜像",
-                        padded * if self.request.verify { 2 } else { 1 },
-                        0.0,
-                        100.0,
-                    );
+                    report.phase("writing", "正在写入原始镜像", padded, 0.0, 100.0);
                     write_file(
                         self.session.as_mut().ok_or("USB 会话已关闭")?,
                         self.source.as_mut().ok_or("缺少固件文件")?,
                         0,
                         size,
                         self.request.start_sector,
-                        self.request.verify,
                         report,
                     )
                     .await?;
@@ -920,7 +921,7 @@ impl Prepared {
             .filter(|p| p.name != "bootloader")
             .map(|p| p.size.div_ceil(512) * 512)
             .sum::<u64>();
-        let bytes = metadata_bytes * 2 + payload_bytes * if self.request.verify { 2 } else { 1 };
+        let bytes = metadata_bytes * 2 + payload_bytes;
         report.phase(
             "writing-gpt",
             "已完成全部安全检查，正在写入并校验 GPT",
@@ -929,29 +930,26 @@ impl Prepared {
             75.0,
         );
         // Backup GPT first: interrupted writes leave the old primary readable.
-        write_memory(
+        write_metadata(
             self.session.as_mut().ok_or("USB 会话已关闭")?,
             capacity - 33,
             &disk.backup,
-            true,
             report,
         )
         .await?;
-        write_memory(
+        write_metadata(
             self.session.as_mut().ok_or("USB 会话已关闭")?,
             0,
             &disk.primary,
-            true,
             report,
         )
         .await?;
         report.label("writing-idb", "正在持久化 MiniLoader 到 IDB 引导区");
         for write in idb {
-            write_memory(
+            write_metadata(
                 self.session.as_mut().ok_or("USB 会话已关闭")?,
                 write.sector,
                 &write.data,
-                true,
                 report,
             )
             .await?;
@@ -965,7 +963,6 @@ impl Prepared {
                 part.offset,
                 part.size,
                 start,
-                self.request.verify,
                 report,
             )
             .await?;
@@ -1077,7 +1074,6 @@ async fn write_file(
     offset: u64,
     size: u64,
     start: u64,
-    verify: bool,
     report: &mut Reporter,
 ) -> Result<(), String> {
     file.seek(SeekFrom::Start(offset))
@@ -1089,7 +1085,7 @@ async fn write_file(
         let mut data = vec![0; bytes.next_multiple_of(512)];
         file.read_exact(&mut data[..bytes])
             .map_err(|e| format!("固件读取失败：{e}"))?;
-        write_memory(session, start + done / 512, &data, verify, report).await?;
+        write_memory(session, start + done / 512, &data, report).await?;
         done += bytes as u64;
     }
     Ok(())
@@ -1099,7 +1095,6 @@ async fn write_memory(
     session: &mut Session,
     start: u64,
     data: &[u8],
-    verify: bool,
     report: &mut Reporter,
 ) -> Result<(), String> {
     if data.is_empty() || data.len() % 512 != 0 {
@@ -1110,16 +1105,32 @@ async fn write_memory(
         let lba = start + (index * CHUNK_BYTES / 512) as u64;
         session.write(lba, chunk).await?;
         report.advance(chunk.len() as u64);
-        if verify {
-            // Verify the exact bytes (including final-sector padding), before
-            // reusing the buffer or advancing to the next write.
-            let mut readback = vec![0; chunk.len()];
-            session.read(lba, &mut readback).await?;
-            if readback != chunk {
-                return Err(format!("读回校验不匹配，起始 LBA {lba}；已停止后续写入"));
-            }
-            report.advance(chunk.len() as u64);
+    }
+    Ok(())
+}
+
+async fn write_metadata(
+    session: &mut Session,
+    start: u64,
+    data: &[u8],
+    report: &mut Reporter,
+) -> Result<(), String> {
+    if data.is_empty() || data.len() % 512 != 0 {
+        return Err("写入数据不是完整的 512 字节扇区".into());
+    }
+    // GPT and IDB are boot metadata, always checked before writing the next
+    // chunk. Firmware payload writes do not use this readback path.
+    for (index, chunk) in data.chunks(CHUNK_BYTES).enumerate() {
+        let lba = start + (index * CHUNK_BYTES / 512) as u64;
+        write_memory(session, lba, chunk, report).await?;
+        let mut readback = vec![0; chunk.len()];
+        session.read(lba, &mut readback).await?;
+        if readback != chunk {
+            return Err(format!(
+                "GPT/IDB 元数据读回不匹配，起始 LBA {lba}；已停止后续写入"
+            ));
         }
+        report.advance(chunk.len() as u64);
     }
     Ok(())
 }

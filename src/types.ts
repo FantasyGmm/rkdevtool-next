@@ -35,7 +35,6 @@ export interface OperationRequest {
   outputPath: string | null;
   startSector: number;
   sectors: number | null;
-  verify: boolean;
   reboot: boolean;
   confirmed: boolean;
   writes?: { name: string; path: string; startSector: number }[];

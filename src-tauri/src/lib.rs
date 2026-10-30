@@ -21,8 +21,17 @@ async fn scan_devices(state: State<'_, Arc<Backend>>) -> Result<Vec<DeviceInfo>,
         .clone()
         .try_lock_owned()
         .map_err(|_| "设备任务运行中，扫描已暂停")?;
+    let targets = usb::targets().await?;
+    let connected_ids: Vec<_> = targets
+        .iter()
+        .map(|target| target.info.id.as_str())
+        .collect();
+    let rebooting_ids = state.rebooting_device_ids(&connected_ids).await;
     let mut devices = Vec::new();
-    for mut target in usb::targets().await? {
+    for mut target in targets {
+        if rebooting_ids.contains(&target.info.id) {
+            continue;
+        }
         if target.info.mode == "loader" {
             let detected = format!(
                 "已检测到 Loader 候选设备（{}），但读取失败",

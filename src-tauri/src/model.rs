@@ -66,7 +66,9 @@ pub struct OperationRequest {
     pub output_path: Option<String>,
     pub start_sector: u64,
     pub sectors: Option<u64>,
-    pub verify: bool,
+    // Accept the removed option in older requests without affecting execution.
+    #[serde(default, skip_serializing, rename = "verify")]
+    pub _legacy_verify: Option<bool>,
     pub reboot: bool,
     pub confirmed: bool,
     pub writes: Option<Vec<WriteEntry>>,

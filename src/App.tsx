@@ -66,7 +66,6 @@ import type {
 type Page = "flash" | "partitions" | "advanced";
 type LogLine = { id: number; time: string; level: OperationEvent["level"]; text: string };
 type Preferences = {
-  verify: boolean;
   reboot: boolean;
   theme: "light" | "dark" | "system";
 };
@@ -96,6 +95,27 @@ const operationLabels: Record<OperationKind, string> = {
   maskrom: "进入 Maskrom",
   unpack: "解包固件",
 };
+const operationStageLabels: Record<string, string> = {
+  preflight: "检查中",
+  extracting: "解包中",
+  writing: "写入中",
+  rebooting: "重启中",
+  "loading-loader": "加载 Loader 中",
+  erasing: "擦除中",
+  reconnecting: "等待设备重连",
+  "verifying-package": "校验固件中",
+  "writing-gpt": "写入分区表",
+  "writing-idb": "写入引导区",
+  reading: "备份中",
+  unpack: "解包中",
+  "close-protected": "任务进行中",
+};
+const jobDisplayTitle = (event: OperationEvent) => {
+  if (event.status === "completed") return "已完成";
+  if (event.status === "failed") return "任务失败";
+  if (event.status === "cancelled") return "已停止";
+  return operationStageLabels[event.stage] || event.stage;
+};
 const modeLabel = (mode: DeviceInfo["mode"]) =>
   mode === "maskrom" ? "Maskrom" : mode === "loader" ? "Loader" : "未知模式";
 const size = (bytes: number | null) => {
@@ -109,6 +129,12 @@ const size = (bytes: number | null) => {
   );
 };
 const shortFile = (path: string | null) => path?.split(/[\\/]/).pop() || "—";
+const shortFileLabel = (path: string) =>
+  path.split(" › ").map(shortFile).join(" › ");
+const deviceDisplayName = (device: DeviceInfo | null) => {
+  const model = device?.mode === "loader" ? device.chipModel?.trim() : null;
+  return model ? "Rockchip " + model : device?.name;
+};
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const validSector = (value: string) =>
@@ -229,14 +255,13 @@ export default function App() {
         localStorage.getItem("rk-studio-preferences") || "{}",
       );
       return {
-        verify: p.verify !== false,
         reboot: p.reboot !== false,
         theme: ["light", "dark", "system"].includes(p.theme)
           ? p.theme
           : "light",
       };
     } catch {
-      return { verify: true, reboot: true, theme: "light" };
+      return { reboot: true, theme: "light" };
     }
   });
   const busy = toolBusy || starting || shortKind !== null || job?.status === "running";
@@ -256,7 +281,7 @@ export default function App() {
   currentDeviceKey.current = deviceKey;
   const loaderMode = device?.mode === "loader";
   const chipModel = loaderMode ? device?.chipModel?.trim() : null;
-  const deviceTitle = chipModel ? "Rockchip " + chipModel : device?.name;
+  const deviceTitle = deviceDisplayName(device);
   const isRaw = firmware?.kind === "raw";
   const browserFile = !native && !!firmware?.path.startsWith("browser-file/");
   const longTask = starting || !!job;
@@ -388,7 +413,8 @@ export default function App() {
           setShortKind(null);
           shortKindRef.current = null;
           busyRef.current = false;
-          if (event.status === "failed") setError(event.message);
+          // Long tasks already own the shared status card; short tasks need an error there.
+          if (event.status === "failed") setError(isShort ? event.message : null);
           void scan();
         }
       })
@@ -611,7 +637,6 @@ export default function App() {
     outputPath: null,
     startSector: 0,
     sectors: null,
-    verify: kind === "flash" && prefs.verify,
     reboot: false,
     confirmed: false,
   });
@@ -832,10 +857,7 @@ export default function App() {
       writes: rows.map((row) => ({ name: row.name, path: row.file!.path, startSector: Number(row.address) })),
       reboot: prefs.reboot,
     };
-    const stages = rows.flatMap((row) => [
-      "写入 " + (row.name || row.file!.name),
-      ...(prefs.verify ? ["校验 " + (row.name || row.file!.name)] : []),
-    ]);
+    const stages = rows.map((row) => "写入 " + (row.name || row.file!.name));
     setPending({
       request,
       target: { ...device },
@@ -987,9 +1009,22 @@ export default function App() {
   const deviceSummary = device
     ? `${deviceTitle} · ${modeLabel(device.mode)}`
     : multipleDevices ? "请仅保留一台设备" : "未连接设备";
+  const connectionWarning = multipleDevices
+    ? `检测到 ${devices.length} 台设备。为避免误操作，请断开其他设备，仅保留要操作的一台。`
+    : null;
+  const statusMessage = error || (job?.status === "failed" ? job.message : null) || connectionWarning;
+  const statusFailed = !!error || job?.status === "failed";
+  const taskRunning = starting || job?.status === "running";
+  const showTaskStatus = longTask && (!error || taskRunning);
+  const showStatus = showTaskStatus || !!statusMessage;
+  const compactProgress = taskRunning && !statusMessage;
+  const statusKind = showTaskStatus ? job?.status || "running" : statusFailed ? "failed" : "warning";
+  const statusTitle = showTaskStatus
+    ? starting ? "准备任务" : job && jobDisplayTitle(job)
+    : error ? "操作失败" : "连接提示";
 
   return (
-    <div className={"app-shell" + (longTask ? " has-job" : "")}>
+    <div className="app-shell">
       <header className="app-toolbar">
         <div className="app-brand">
           <img src="/icon.png" alt="" />
@@ -1030,27 +1065,15 @@ export default function App() {
         </div>
       </header>
       <main
-        className={"workspace" + (page === "partitions" ? " partitions-workspace" : "")}
+        className="workspace"
         id="workspace"
         role="tabpanel"
         aria-labelledby={"tab-" + page}
       >
-        {multipleDevices && <div className="error-banner" role="alert"><TriangleAlert size={16} /><span>检测到 {devices.length} 台设备。为避免误操作，请断开其他设备，仅保留要操作的一台。</span></div>}
-        {error && (
-          <div className="error-banner" role="alert">
-            <TriangleAlert size={16} />
-            <span>{error}</span>
-            <button
-              className="icon-button"
-              aria-label="关闭错误"
-              onClick={() => setError(null)}
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
+        <div className="workspace-content">
         {page === "flash" && (
           <div className="flash-workspace">
+            <div className="flash-panels">
             <section className="panel device-panel" aria-label="目标设备">
               <div className="panel-heading">
                 <h2>目标设备</h2>
@@ -1093,7 +1116,7 @@ export default function App() {
                         ) : (
                           <PlugZap size={15} />
                         )}
-                        {shortKind === "loader" ? "加载中…" : "加载 Loader…"}
+                        {shortKind === "loader" ? "加载中…" : "加载 Loader"}
                       </button>
                     )}
                   </>
@@ -1123,6 +1146,18 @@ export default function App() {
             <section className="panel firmware-panel" aria-label="固件文件">
               <div className="panel-heading">
                 <h2>固件文件</h2>
+                <label className="raw-address" title={!isRaw ? "仅用于 RAW 镜像；固件包按自身布局写入" : undefined}>
+                  <span>起始扇区（LBA）</span>
+                  <input
+                    aria-label="起始扇区"
+                    className="address-input"
+                    value={address}
+                    aria-invalid={!inspecting && !!rawAddressError}
+                    aria-describedby={!inspecting && rawAddressError ? "raw-address-error" : undefined}
+                    onChange={(e) => setAddress(e.target.value)}
+                    disabled={busy || inspecting || !isRaw}
+                  />
+                </label>
               </div>
               <div
                 className={
@@ -1155,7 +1190,7 @@ export default function App() {
                   )}
                 </div>
                 <div className="file-description">
-                  <h3 title={filePath}>
+                  <h3 title={fileName}>
                     {inspecting
                       ? "正在读取文件…"
                       : fileName || "选择或拖入固件"}
@@ -1258,69 +1293,16 @@ export default function App() {
                 ))}
               {firmware && !inspecting && (
                 <>
-                  {isRaw && (
-                    <label className="raw-address">
-                      <span>起始扇区（LBA）</span>
-                      <input
-                        aria-label="起始扇区"
-                        className="address-input"
-                        value={address}
-                        aria-invalid={!!rawAddressError}
-                        aria-describedby={rawAddressError ? "raw-address-error" : undefined}
-                        onChange={(e) => setAddress(e.target.value)}
-                        disabled={busy}
-                      />
-                    </label>
-                  )}
                   {rawAddressError && <p id="raw-address-error" className="field-error">{rawAddressError}</p>}
                   {firmware.warnings.length > 0 && <div className="firmware-warnings" role="status">
                     <TriangleAlert size={15} /><div>{firmware.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div>
                   </div>}
-                  {!archive && (
-                    <details className="disclosure firmware-disclosure">
-                      <summary>
-                        文件详情
-                        <ChevronDown size={14} />
-                      </summary>
-                      <div className="disclosure-body">
-                        <dl className="file-details">
-                          <div>
-                            <dt>文件位置</dt>
-                            <dd className="break-path">{firmware.path}</dd>
-                          </div>
-                          {firmware.model && (
-                            <div>
-                              <dt>目标机型</dt>
-                              <dd>{firmware.model}</dd>
-                            </div>
-                          )}
-                          {firmware.manufacturer && (
-                            <div>
-                              <dt>制造商</dt>
-                              <dd>{firmware.manufacturer}</dd>
-                            </div>
-                          )}
-                        </dl>
-
-                      </div>
-                    </details>
-                  )}
                 </>
               )}
             </section>
-            <section className="flash-action" aria-label="烧录选项与操作">
+            </div>
+            {!showTaskStatus && <section className="flash-action" aria-label="烧录选项与操作">
               <div className="write-options">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={prefs.verify}
-                    disabled={busy}
-                    onChange={(e) =>
-                      setPrefs((p) => ({ ...p, verify: e.target.checked }))
-                    }
-                  />
-                  写入后校验
-                </label>
                 <label>
                   <input
                     type="checkbox"
@@ -1344,7 +1326,7 @@ export default function App() {
                 <Zap size={16} />
                 开始烧录…
               </button>
-            </section>
+            </section>}
           </div>
         )}
 
@@ -1621,17 +1603,6 @@ export default function App() {
                   </table>
                 </div>
                 <div className="address-actions">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={prefs.verify}
-                      disabled={busy}
-                      onChange={(e) =>
-                        setPrefs((p) => ({ ...p, verify: e.target.checked }))
-                      }
-                    />
-                    写入后校验
-                  </label>
                   <button
                     className="button primary"
                     title={
@@ -1862,6 +1833,8 @@ export default function App() {
           </section>
         )}
 
+        </div>
+
         <section className="panel console-panel">
           <div className="console-heading">
             <div className="console-title">
@@ -1942,59 +1915,65 @@ export default function App() {
 
       </main>
 
-      {longTask && (
+      {showStatus && (
         <section
-          className={"job-panel " + (job?.status || "running")}
+          className={"job-panel " + statusKind + (statusFailed ? " has-error" : "") + (compactProgress ? " compact-progress" : "")}
           aria-live="polite"
         >
           <div className="job-top">
             <div className="job-label">
-              {starting || job?.status === "running" ? (
+              {taskRunning ? (
                 <LoaderCircle size={18} className="spin" />
-              ) : job?.status === "completed" ? (
+              ) : showTaskStatus && job?.status === "completed" ? (
                 <Check size={18} />
               ) : (
                 <TriangleAlert size={18} />
               )}
               <div>
-                <strong>{starting ? "准备任务" : job?.stage}</strong>
-                {job?.status === "failed" && <span>{job.message}</span>}
+                <strong>{statusTitle}</strong>
+                {job?.status === "running" && job.bytesDone != null && job.bytesTotal != null && (
+                  <span className="job-bytes">{size(job.bytesDone)} / {size(job.bytesTotal)}</span>
+                )}
+                {statusMessage && <span>{statusMessage}</span>}
               </div>
             </div>
             <div className="job-controls">
-              {(starting || job?.status === "running") && (
+              {taskRunning && (
                 <strong className="progress-number">
                   {job?.progress != null ? Math.round(job.progress) + "%" : "—"}
                 </strong>
               )}
-              {(starting || job?.status === "running") && activeJobId && (
+              {taskRunning && activeJobId && (
                 <button
                   className="button secondary"
                   disabled={stopping}
+                  title="停止任务不会撤销已写入或擦除的数据"
                   onClick={() => void cancel()}
                 >
                   <Square size={12} />
                   {stopping ? "正在停止…" : "停止任务"}
                 </button>
               )}
-              {!busy && (
+              {error && busy && (
+                <button className="icon-button" onClick={() => setError(null)} aria-label="关闭错误">
+                  <X size={16} />
+                </button>
+              )}
+              {!busy && (!multipleDevices || !!error || !!job) && (
                 <button
                   className="icon-button"
-                  onClick={() => setJob(null)}
-                  aria-label="关闭任务状态"
+                  onClick={() => { setJob(null); setError(null); }}
+                  aria-label="关闭状态提示"
                 >
                   <X size={16} />
                 </button>
               )}
             </div>
           </div>
-          {(job?.status === "cancelled" || job?.status === "failed") && (
+          {showTaskStatus && (job?.status === "cancelled" || job?.status === "failed") && (
             <p className="recovery-note">若任务已开始写入或擦除，已修改的数据不会回滚。请检查连接与供电，重新确认设备后完整重试或恢复备份。</p>
           )}
-          {job?.status === "running" && job.bytesDone != null && job.bytesTotal != null && (
-            <p className="job-bytes">{size(job.bytesDone)} / {size(job.bytesTotal)} · 停止任务不会撤销已写入的数据</p>
-          )}
-          {(starting || job?.status === "running") && (
+          {taskRunning && (
             <div
               className={
                 "progress-track" +
@@ -2099,7 +2078,7 @@ export default function App() {
           <div className="confirm-target">
             <Cpu size={25} />
             <div>
-              <strong>{pending.target.chip || pending.target.name}</strong>
+              <strong>{deviceDisplayName(pending.target)}</strong>
               <small>{pending.target.connection}</small>
             </div>
             <span className="mode-badge">{modeLabel(pending.target.mode)}</span>
@@ -2108,7 +2087,7 @@ export default function App() {
             {pending.file && (
               <div>
                 <dt>文件</dt>
-                <dd className="break-path">{pending.file}</dd>
+                <dd className="break-path">{shortFileLabel(pending.file)}</dd>
               </div>
             )}
             <div>
@@ -2117,7 +2096,7 @@ export default function App() {
             </div>
           </dl>
           {pending.request.kind === "flash" && <p className="confirm-options">
-            {pending.request.verify ? "写入后校验" : "不进行回读校验"} · {pending.request.reboot ? "完成后重启" : "完成后保持连接"}
+            {pending.request.reboot ? "完成后重启" : "完成后保持连接"}
           </p>}
           {pending.warnings?.map((warning, i) => <p className="field-error" key={i}>{warning}</p>)}
           <div className="confirm-warning">

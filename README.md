@@ -1,26 +1,26 @@
 <p align="center">
-  <img src="public/icon.png" width="96" alt="RK Studio logo" />
+  <img src="public/icon.png" width="96" alt="RKDevTool Next logo" />
 </p>
 
-<h1 align="center">RK Studio</h1>
+<h1 align="center">RKDevTool Next</h1>
 
 <p align="center">面向 Rockchip 开发板的原生烧录工作台</p>
 <p align="center">
-  <a href="https://github.com/FantasyGmm/RK-Studio/releases/latest">下载安装包</a> ·
-  <a href="https://github.com/FantasyGmm/RK-Studio/actions/workflows/desktop-build.yml">构建状态</a> ·
-  <a href="https://github.com/FantasyGmm/RK-Studio/issues">反馈问题</a>
+  <a href="https://github.com/FantasyGmm/rkdevtool-next/releases/latest">下载安装包</a> ·
+  <a href="https://github.com/FantasyGmm/rkdevtool-next/actions/workflows/desktop-build.yml">构建状态</a> ·
+  <a href="https://github.com/FantasyGmm/rkdevtool-next/issues">反馈问题</a>
 </p>
 
-RK Studio 使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
+RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
 
 ## 下载与安装
 
-到 [Releases](https://github.com/FantasyGmm/RK-Studio/releases) 下载与你的电脑匹配的安装包：
+到 [Releases](https://github.com/FantasyGmm/rkdevtool-next/releases) 下载与你的电脑匹配的安装包：
 
 | 平台 | 文件 | 安装方式 |
 | --- | --- | --- |
-| macOS Apple Silicon（M 系列，macOS 11+） | `RK-Studio_*_macos-arm64.dmg` | 打开 DMG，将 RK Studio 拖入「应用程序」 |
-| Windows x64（Windows 10 / 11） | `RK-Studio_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
+| macOS Apple Silicon（M 系列，macOS 11+） | `RKDevTool-Next_*_macos-arm64.dmg` | 打开 DMG，将 RKDevTool Next 拖入「应用程序」 |
+| Windows x64（Windows 10 / 11） | `RKDevTool-Next_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
 
 macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签名或公证；Windows 安装包未配置代码签名。系统可能显示安全提示，请确认安装包来自本仓库的 Release。
 
@@ -65,8 +65,8 @@ macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签�
 - Linux：WebKitGTK 4.1 等原生依赖；当前 Release 不提供 Linux 安装包。
 
 ```bash
-git clone https://github.com/FantasyGmm/RK-Studio.git
-cd RK-Studio
+git clone https://github.com/FantasyGmm/rkdevtool-next.git
+cd rkdevtool-next
 npm ci --ignore-scripts
 npm run desktop
 ```
@@ -98,7 +98,7 @@ Linux 源码构建需安装 WebKitGTK 4.1、OpenSSL、AppIndicator、librsvg、p
 package.json
 package-lock.json（顶层与根 package）
 src-tauri/Cargo.toml
-src-tauri/Cargo.lock（rk-studio package）
+src-tauri/Cargo.lock（rkdevtool-next package）
 src-tauri/tauri.conf.json
 ```
 
@@ -126,7 +126,7 @@ scripts/                本机构建与版本一致性检查
 
 ## 致谢与许可证
 
-特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RK Studio 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
+特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RKDevTool Next 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
 
 同时感谢 [rockchip-linux/rkdeveloptool](https://github.com/rockchip-linux/rkdeveloptool)、[rockchip-linux/u-boot](https://github.com/rockchip-linux/u-boot)、[Collabora rockchiprs（rockusb / rockfile）](https://github.com/collabora/rockchiprs)、[nusb](https://github.com/kevinmehall/nusb) 和 [Tauri](https://github.com/tauri-apps/tauri) 等开源项目。各项目在本项目中的用途见 [致谢](ACKNOWLEDGEMENTS.md)。
 

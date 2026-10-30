@@ -1,13 +1,13 @@
 [package]
-name = "rk-studio"
+name = "rkdevtool-next"
 version = "0.1.4"
-description = "Native Rockchip flashing studio"
+description = "Native cross-platform Rockchip flashing tool"
 edition = "2024"
 rust-version = "1.85"
 license = "GPL-3.0-only"
 
 [lib]
-name = "rk_studio_lib"
+name = "rkdevtool_next_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

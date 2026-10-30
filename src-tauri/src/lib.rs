@@ -170,7 +170,7 @@ pub fn run() {
             get_runtime_info
         ])
         .build(tauri::generate_context!())
-        .expect("RK Studio failed to initialize");
+        .expect("RKDevTool Next failed to initialize");
     app.run(|app, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             let state = app.state::<Arc<Backend>>();

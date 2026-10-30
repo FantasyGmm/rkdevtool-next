@@ -65,7 +65,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
-          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RK Studio.app"
+          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevTool Next.app"
           hdiutil verify src-tauri/target/"$BUILD_TARGET"/release/bundle/dmg/*.dmg
       - name: Collect installer
         env:
@@ -79,10 +79,10 @@ jobs:
           files=("src-tauri/target/$BUILD_TARGET/release/bundle/$BUNDLE_DIR/"*."$PACKAGE_EXT")
           [[ ${#files[@]} -eq 1 ]] || { echo 'Expected exactly one installer' >&2; exit 1; }
           mkdir -p release
-          cp "${files[0]}" "release/RK-Studio_${version}_${ASSET_SUFFIX}"
+          cp "${files[0]}" "release/RKDevTool-Next_${version}_${ASSET_SUFFIX}"
       - uses: actions/upload-artifact@v7
         with:
-          name: RK-Studio-${{ matrix.platform }}
+          name: RKDevTool-Next-${{ matrix.platform }}
           path: release/*
           if-no-files-found: error
           retention-days: 14
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: RK-Studio-*
+          pattern: RKDevTool-Next-*
           path: release
           merge-multiple: true
       - name: Publish complete installer set
@@ -111,8 +111,8 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           assets=(
-            "release/RK-Studio_${version}_macos-arm64.dmg"
-            "release/RK-Studio_${version}_windows-x64-setup.exe"
+            "release/RKDevTool-Next_${version}_macos-arm64.dmg"
+            "release/RKDevTool-Next_${version}_windows-x64-setup.exe"
           )
           for asset in "${assets[@]}"; do
             [[ -s "$asset" ]] || { echo "Missing installer: $asset" >&2; exit 1; }
@@ -130,7 +130,7 @@ jobs:
             [[ "$draft" == true ]] || { echo 'Release already published; use a new version instead of replacing it.' >&2; exit 1; }
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "RK Studio $RELEASE_TAG" --notes-file release-notes.md
+              --title "RKDevTool Next $RELEASE_TAG" --notes-file release-notes.md
           fi
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

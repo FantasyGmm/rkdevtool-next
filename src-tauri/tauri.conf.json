@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RK Studio",
+  "productName": "RKDevTool Next",
   "version": "0.1.4",
   "identifier": "io.rkstudio.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [{
       "label": "main",
-      "title": "RK Studio",
+      "title": "RKDevTool Next",
       "width": 900,
       "height": 680,
       "minWidth": 780,
@@ -29,7 +29,7 @@
     "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
     "targets": ["nsis", "dmg", "app"],
     "category": "Utility",
-    "shortDescription": "Native Rockchip flashing studio",
+    "shortDescription": "Native cross-platform Rockchip flashing tool",
     "copyright": "GPL-3.0-only",
     "windows": { "nsis": { "displayLanguageSelector": true, "languages": ["SimpChinese", "English"] } },
     "macOS": { "minimumSystemVersion": "11.0" }

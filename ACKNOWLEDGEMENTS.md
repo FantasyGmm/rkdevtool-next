@@ -2,7 +2,7 @@
 
 ## 工作流与协议参考
 
-- **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**：本项目的主要参考，提供了 Rockchip 固件烧录流程、固件容器处理及桌面交互的实践基础。RK Studio 使用 Tauri、React 与 Rust 重新实现原生工作台。原项目采用 [GPL v3](https://github.com/gahingwoo/RKDevelopTool-GUI/blob/main/LICENSE)。
+- **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**：本项目的主要参考，提供了 Rockchip 固件烧录流程、固件容器处理及桌面交互的实践基础。RKDevTool Next 使用 Tauri、React 与 Rust 重新实现原生工作台。原项目采用 [GPL v3](https://github.com/gahingwoo/RKDevelopTool-GUI/blob/main/LICENSE)。
 - **[rockchip-linux / rkdeveloptool](https://github.com/rockchip-linux/rkdeveloptool)**：RockUSB 命令、Loader 下载及固件布局的协议参考。
 - **[rockchip-linux / u-boot](https://github.com/rockchip-linux/u-boot)**：ChipInfo 型号映射和 USB-PLUG Loader 行为的参考。
 
@@ -17,6 +17,6 @@
 
 ## 品牌资源
 
-RK Studio 的新标志由 OpenAI 图像生成工具按项目设计需求生成。源图和生成提示分别保留在 `assets/icon-source.png` 与 `assets/icon-prompt.txt`；界面及系统图标由该源图派生。
+RKDevTool Next 的新标志由 OpenAI 图像生成工具按项目设计需求生成。源图和生成提示分别保留在 `assets/icon-source.png` 与 `assets/icon-prompt.txt`；界面及系统图标由该源图派生。
 
 感谢所有上游项目的维护者与贡献者。

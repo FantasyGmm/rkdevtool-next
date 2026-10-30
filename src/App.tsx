@@ -52,6 +52,7 @@ import {
   type PickedFile,
 } from "./demo-files";
 import { inspectBrowserFirmware } from "./browser-files";
+import { productName as appName, version as appVersion } from "../src-tauri/tauri.conf.json";
 import type {
   DeviceInfo,
   DeviceQuery,
@@ -177,7 +178,7 @@ export default function App() {
   const [partitions, setPartitions] = useState<PartitionInfo[]>([]);
   const [reading, setReading] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([
-    { id: 0, time: new Date().toISOString(), level: "info", text: "RK Studio 已就绪" },
+    { id: 0, time: new Date().toISOString(), level: "info", text: `${appName} 已就绪` },
   ]);
   const logSequence = useRef(0);
   const lastOperationLog = useRef<OperationEvent | null>(null);
@@ -222,6 +223,7 @@ export default function App() {
   const [eraseAddress, setEraseAddress] = useState("0x0");
   const [eraseSectors, setEraseSectors] = useState("0x2000");
   const [prefs, setPrefs] = useState<Preferences>(() => {
+    // Keep the existing storage key so renaming does not reset preferences.
     try {
       const p = JSON.parse(
         localStorage.getItem("rk-studio-preferences") || "{}",
@@ -991,7 +993,7 @@ export default function App() {
       <header className="app-toolbar">
         <div className="app-brand">
           <img src="/icon.png" alt="" />
-          <strong>RK Studio</strong>
+          <strong>{appName}</strong>
         </div>
         <nav className="page-tabs" role="tablist" aria-label="工作区">
           {(
@@ -2168,7 +2170,7 @@ export default function App() {
             <img src="/icon.png" alt="" />
             <div>
               <strong>
-                RK Studio <span>0.1.0</span>
+                {appName} <span>{appVersion}</span>
               </strong>
               <p>Tauri 2 · Native RockUSB</p>
               <small>GPL-3.0</small>

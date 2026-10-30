@@ -235,7 +235,7 @@ export const api = {
   async exportLogs(contents: string) {
     if (native) {
       const path = await save({
-        defaultPath: `rk-studio-${new Date().toISOString().slice(0, 10)}.log`,
+        defaultPath: `rkdevtool-next-${new Date().toISOString().slice(0, 10)}.log`,
         filters: [{ name: "日志", extensions: ["log"] }],
       });
       if (path) await invoke("export_logs", { path, contents });
@@ -245,7 +245,7 @@ export const api = {
       );
       const a = document.createElement("a");
       a.href = url;
-      a.download = "rk-studio.log";
+      a.download = "rkdevtool-next.log";
       a.click();
       URL.revokeObjectURL(url);
     }

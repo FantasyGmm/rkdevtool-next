@@ -40,6 +40,14 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 
 macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签名或公证；Windows 安装包未配置代码签名。系统可能显示安全提示，请确认安装包来自本仓库的 Release。
 
+**macOS 首次打开：** 将 App 拖入「应用程序」后，如果系统提示 Apple 无法验证此 App，且你已确认 DMG 来自本仓库的 Release，可以按 [Apple 的说明](https://support.apple.com/zh-cn/102445)在「隐私与安全性」中选择「仍要打开」，也可以在终端运行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
+```
+
+这条命令只移除该 App 的下载隔离标记，不关闭系统的门禁。运行后重新打开 App。
+
 **Windows USB 驱动：** 原生后端需要目标 **Rockusb 接口使用 WinUSB**。Rockchip 专有驱动不等同于 WinUSB。修改驱动前记录原驱动，并只选择开发板对应的 USB 接口，避免改动其他设备。
 
 ## 开始烧录

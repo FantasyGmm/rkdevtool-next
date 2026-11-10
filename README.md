@@ -179,8 +179,8 @@ src-tauri/tauri.conf.json
 
 ```bash
 npm run check:version
-git tag v0.1.7
-git push origin main v0.1.7
+git tag v0.1.8
+git push origin main v0.1.8
 ```
 
 工作流使用仓库内置的 `GITHUB_TOKEN` 发布，无需额外保存 GitHub PAT、Apple 证书或签名密钥。构建不连接开发板，也不执行烧录或擦除。

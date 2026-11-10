@@ -1,7 +1,7 @@
 [package]
 name = "rkdevtool-next"
 default-run = "rkdevtool-next"
-version = "0.1.7"
+version = "0.1.8"
 description = "Native cross-platform Rockchip flashing tool"
 edition = "2024"
 rust-version = "1.88"

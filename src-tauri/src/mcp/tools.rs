@@ -497,10 +497,7 @@ impl Tools {
             let mut first = u64::MAX;
             let mut end = 0;
             for entry in writes {
-                let count = fs::metadata(&entry.path)
-                    .map_err(|e| format!("无法读取批量镜像：{e}"))?
-                    .len()
-                    .div_ceil(512);
+                let count = input_file(&entry.path)?.len().div_ceil(512);
                 if count == 0 {
                     return Err("批量镜像不能为空。".into());
                 }
@@ -630,15 +627,18 @@ fn absolute_path(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn input_file(path: &str) -> Result<(), String> {
+fn input_file(path: &str) -> Result<fs::Metadata, String> {
     let file = absolute_path(path)?;
-    if !fs::metadata(file)
-        .map_err(|e| format!("无法读取固件：{e}"))?
-        .is_file()
-    {
-        return Err("固件必须是普通文件。".into());
+    let metadata = fs::metadata(&file).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("服务端找不到固件文件 {file:?}；请检查该路径及文件是否已移动。")
+        }
+        _ => format!("服务端无法读取固件文件 {file:?}：{e}"),
+    })?;
+    if !metadata.is_file() {
+        return Err(format!("服务端路径 {file:?} 不是普通固件文件。"));
     }
-    Ok(())
+    Ok(metadata)
 }
 
 fn failure(error: String) -> CallToolResult {

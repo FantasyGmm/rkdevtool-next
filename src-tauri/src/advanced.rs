@@ -3,7 +3,10 @@
 use crate::{state::Backend, usb};
 use rockusb::{operation, protocol::StorageIndex};
 use serde::Serialize;
-use std::{sync::Arc, time::Instant};
+#[cfg(feature = "desktop")]
+use std::sync::Arc;
+use std::time::Instant;
+#[cfg(feature = "desktop")]
 use tauri::State;
 
 #[derive(Debug, Serialize)]
@@ -58,7 +61,7 @@ fn validate_query(query: &str) -> Result<(), String> {
     }
 }
 
-fn storage_index(storage: &str) -> Result<StorageIndex, String> {
+pub(crate) fn storage_index(storage: &str) -> Result<StorageIndex, String> {
     // Only named, documented BOOT_TYPE indices. Never pass through arbitrary
     // numeric values or Unknown; capability does not enumerate installed media.
     match storage {
@@ -87,23 +90,32 @@ async fn loader_session(device_id: &str) -> Result<usb::Session, String> {
     usb::Session::open(&target).await
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn query_device(
     device_id: String,
     query: String,
     state: State<'_, Arc<Backend>>,
 ) -> Result<QueryReport, String> {
-    validate_query(&query)?;
-    let _gate = state
+    read_query(&state, &device_id, &query).await
+}
+
+pub async fn read_query(
+    backend: &Backend,
+    device_id: &str,
+    query: &str,
+) -> Result<QueryReport, String> {
+    validate_query(query)?;
+    let _gate = backend
         .usb_gate
         .clone()
         .try_lock_owned()
         .map_err(|_| "USB 设备正忙；请等待当前任务或扫描完成")?;
-    if state.is_busy() {
+    if backend.is_busy() {
         return Err("设备任务运行中，暂不能查询设备".into());
     }
-    let mut session = loader_session(&device_id).await?;
-    match query.as_str() {
+    let mut session = loader_session(device_id).await?;
+    match query {
         "flashId" => {
             let id = session.execute(operation::flash_id()).await?;
             // FlashId exposes a lossy string and Debug, but no raw-byte accessor
@@ -172,22 +184,46 @@ pub async fn query_device(
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn switch_storage(
     device_id: String,
     storage: String,
     state: State<'_, Arc<Backend>>,
 ) -> Result<QueryReport, String> {
-    let requested = storage_index(&storage)?;
-    let _gate = state
+    select_storage(&state, &device_id, &storage).await
+}
+
+#[cfg(feature = "desktop")]
+pub async fn select_storage(
+    backend: &Backend,
+    device_id: &str,
+    storage: &str,
+) -> Result<QueryReport, String> {
+    let requested = storage_index(storage)?;
+    let _gate = reserve_storage_change(backend)?;
+    switch_medium(device_id, requested).await
+}
+
+pub fn reserve_storage_change(
+    backend: &Backend,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let gate = backend
         .usb_gate
         .clone()
         .try_lock_owned()
         .map_err(|_| "USB 设备正忙；请等待当前任务或扫描完成")?;
-    if state.is_busy() {
+    if backend.is_busy() {
         return Err("设备任务运行中，禁止切换存储".into());
     }
-    let mut session = loader_session(&device_id).await?;
+    Ok(gate)
+}
+
+pub async fn switch_medium(
+    device_id: &str,
+    requested: StorageIndex,
+) -> Result<QueryReport, String> {
+    let mut session = loader_session(device_id).await?;
     let capability = session.execute(operation::capability()).await?;
     if !capability.switch_storage() {
         return Err("当前 Loader 未报告切换存储能力；未发送切换命令".into());

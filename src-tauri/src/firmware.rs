@@ -500,6 +500,13 @@ fn read_parameter(file: &mut File, file_size: u64, member: &Member) -> Result<St
         return Err("Rockchip parameter member has an invalid size".into());
     }
     let payload = read_at(file, member.offset, member.size as usize, file_size)?;
+    decode_parameter(&payload)
+}
+
+fn decode_parameter(payload: &[u8]) -> Result<String, String> {
+    if payload.len() < 12 {
+        return Err("Rockchip parameter member has an invalid size".into());
+    }
     if !payload.starts_with(b"PARM") {
         return Err("Rockchip parameter member is missing its PARM header".into());
     }
@@ -533,6 +540,14 @@ fn read_parameter(file: &mut File, file_size: u64, member: &Member) -> Result<St
 }
 
 fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<Layout>, String> {
+    parse_layout(parameter, warnings, false)
+}
+
+fn parse_layout(
+    parameter: &str,
+    warnings: &mut Vec<String>,
+    legacy: bool,
+) -> Result<Vec<Layout>, String> {
     let mut partition_type = None;
     let mut mtdparts = None;
     for line in parameter
@@ -540,7 +555,12 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
     {
-        if let Some((key, value)) = line.split_once(':') {
+        let field = if legacy {
+            line.split_once([':', '='])
+        } else {
+            line.split_once(':')
+        };
+        if let Some((key, value)) = field {
             if key.trim().eq_ignore_ascii_case("TYPE") {
                 if partition_type.replace(value.trim()).is_some() {
                     return Err("Parameter contains more than one TYPE declaration".into());
@@ -557,11 +577,14 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
             }
         }
     }
+    let expected_type = if legacy { "MTD" } else { "GPT" };
     match partition_type {
-        Some(kind) if !kind.eq_ignore_ascii_case("GPT") => {
-            return Err("Only GPT parameter layouts are supported".into());
+        Some(kind) if !kind.eq_ignore_ascii_case(expected_type) => {
+            return Err(format!(
+                "Only {expected_type} parameter layouts are supported"
+            ));
         }
-        None => warnings.push(
+        None if !legacy => warnings.push(
             "Parameter has no TYPE declaration; interpreting its mtdparts layout as GPT".into(),
         ),
         _ => (),
@@ -570,7 +593,12 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
     let (device, definition) = definition
         .split_once(':')
         .ok_or("Invalid mtdparts device declaration")?;
-    if device.is_empty() || definition.is_empty() || definition.contains(';') {
+    // Some GPT-only RKFW packages omit the mtdparts device name. Keep the
+    // existing name requirement when GPT is only inferred.
+    if (device.is_empty() && (legacy || partition_type.is_none()))
+        || definition.is_empty()
+        || definition.contains(';')
+    {
         return Err("Exactly one nonempty mtdparts device layout is supported".into());
     }
     let entries: Vec<_> = definition.split(',').collect();
@@ -600,6 +628,11 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
                 return Err(format!("Duplicate parameter attribute on '{name}'"));
             }
             match attribute {
+                "grow" if legacy && size != "-" => {
+                    return Err(format!(
+                        "Legacy grow partition '{name}' must use '-' for size"
+                    ));
+                }
                 "grow" => grow = true,
                 "bootable" => (),
                 _ => {
@@ -609,7 +642,12 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
                 }
             }
         }
-        if !names.insert(name.to_owned()) {
+        let name_key = if legacy {
+            name.to_ascii_lowercase()
+        } else {
+            name.to_owned()
+        };
+        if !names.insert(name_key) {
             return Err(format!("Duplicate parameter partition '{name}'"));
         }
         let start = parse_sector(start)?;
@@ -645,6 +683,67 @@ fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<La
         });
     }
     Ok(layouts)
+}
+
+#[cfg(feature = "maintenance-cli")]
+pub(crate) fn decode_legacy_sectors(sectors: &[u8]) -> Result<String, String> {
+    if sectors.len() < 12 || !sectors.starts_with(b"PARM") {
+        return Err("No legacy Rockchip PARM block at LBA 8192".into());
+    }
+    let end = (le32(sectors, 4) as usize)
+        .checked_add(12)
+        .ok_or("Legacy parameter length overflows")?;
+    decode_parameter(
+        sectors
+            .get(..end)
+            .ok_or("Legacy parameter block is truncated")?,
+    )
+}
+
+#[cfg(feature = "maintenance-cli")]
+pub(crate) fn legacy_partitions(
+    parameter: &str,
+    capacity: u64,
+) -> Result<Vec<crate::model::PartitionInfo>, String> {
+    parse_layout(parameter, &mut Vec::new(), true)?
+        .into_iter()
+        .map(|part| {
+            let available = capacity
+                .checked_sub(part.start)
+                .filter(|&length| length != 0)
+                .ok_or_else(|| {
+                    format!("Legacy partition {} starts outside the device", part.name)
+                })?;
+            let sectors = part.sectors.unwrap_or(available);
+            if sectors > available {
+                return Err(format!(
+                    "Legacy partition {} exceeds the device capacity",
+                    part.name
+                ));
+            }
+            Ok(crate::model::PartitionInfo {
+                name: part.name,
+                start_sector: part.start,
+                sectors,
+                size: sectors
+                    .checked_mul(DISK_SECTOR)
+                    .ok_or("Legacy partition byte size overflows")?,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "maintenance-cli")]
+pub(crate) fn encode_legacy_parameter(text: &[u8]) -> Result<Vec<u8>, String> {
+    if text.is_empty() || text.len() > 512 * 512 - 12 || !text.is_ascii() || text.contains(&0) {
+        return Err("Legacy parameter must be nonempty ASCII text fitting 512 sectors".into());
+    }
+    let mut block = b"PARM".to_vec();
+    block.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    block.extend_from_slice(text);
+    block.extend_from_slice(&rkcrc32(0, text).to_le_bytes());
+    block.resize(block.len().next_multiple_of(512), 0);
+    Ok(block)
 }
 
 fn parse_sector(value: &str) -> Result<u64, String> {
@@ -891,7 +990,7 @@ fn inspect_gpt(file: &mut File, file_size: u64, info: &mut FirmwareInfo) -> Resu
     Ok(())
 }
 
-fn reject_encoded_image(bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn reject_encoded_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.starts_with(&[0x3a, 0xff, 0x26, 0xed]) {
         return Err("Android sparse images are not supported; convert to a raw image first".into());
     }
@@ -1163,6 +1262,30 @@ pub fn unpack(
 #[cfg(test)]
 mod unpack_tests {
     use super::*;
+
+    #[test]
+    fn anonymous_mtdparts_requires_explicit_gpt_and_a_valid_single_layout() {
+        let definition = "CMDLINE:mtdparts=:0x10@0x40(rootfs),-@0x50(userdata:grow)";
+        let layout = parse_parameter(&format!("TYPE: GPT\n{definition}"), &mut vec![]).unwrap();
+        assert_eq!(layout.len(), 2);
+        assert_eq!((layout[0].start, layout[0].sectors), (64, Some(16)));
+        assert_eq!((layout[1].start, layout[1].sectors), (80, None));
+
+        for parameter in [
+            definition.to_owned(),
+            format!("TYPE: MTD\n{definition}"),
+            "TYPE: GPT\nCMDLINE:mtdparts=:".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:16@64(rootfs);rk:16@80(other)".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:16@64(rootfs),16@72(other)".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:-@64(rootfs:grow),16@80(other)".into(),
+        ] {
+            assert!(
+                parse_parameter(&parameter, &mut vec![]).is_err(),
+                "{parameter}"
+            );
+        }
+    }
+
     fn fixture() -> Vec<u8> {
         let text = b"TYPE: GPT\nCMDLINE: mtdparts=rk:0x10@0x40(rootfs)\n";
         let mut parm = b"PARM".to_vec();

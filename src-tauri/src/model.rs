@@ -1,3 +1,4 @@
+use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize)]
@@ -76,11 +77,14 @@ pub struct OperationRequest {
     pub partition_name: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WriteEntry {
+    /// A label for this RAW image.
     pub name: String,
+    /// Absolute local image path.
     pub path: String,
+    /// Zero-based LBA in 512-byte sectors.
     pub start_sector: u64,
 }
 

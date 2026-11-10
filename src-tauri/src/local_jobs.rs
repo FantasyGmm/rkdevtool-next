@@ -1,8 +1,9 @@
 //! Local-only unpack jobs share cancellation, history and close protection, not USB.
 use crate::{
     firmware,
+    host::Host,
     model::{HistoryEntry, OperationEvent, OperationKind},
-    state::Backend,
+    state::{Backend, JobOrigin},
 };
 use chrono::Utc;
 use serde::Deserialize;
@@ -13,7 +14,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "desktop")]
+use tauri::{AppHandle, State};
 const CANCELLED: &str = "__RK_LOCAL_CANCELLED__";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,9 +23,19 @@ pub struct UnpackRequest {
     pub path: String,
     pub output_dir: String,
 }
-fn event(app: &AppHandle, id: &str, status: &str, message: &str, level: &str, bytes: u64) {
-    let _ = app.emit(
-        "operation-event",
+fn event(
+    app: &Host,
+    backend: &Backend,
+    origin: JobOrigin,
+    id: &str,
+    status: &str,
+    message: &str,
+    level: &str,
+    bytes: u64,
+) {
+    backend.publish_event(
+        app,
+        origin,
         OperationEvent {
             job_id: id.into(),
             status: status.into(),
@@ -41,16 +53,30 @@ fn event(app: &AppHandle, id: &str, status: &str, message: &str, level: &str, by
         },
     );
 }
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn start_unpack(
+pub async fn start_unpack(
     request: UnpackRequest,
     app: AppHandle,
     state: State<'_, Arc<Backend>>,
 ) -> Result<String, String> {
+    launch(
+        request,
+        Host::desktop(app),
+        state.inner().clone(),
+        JobOrigin::Desktop,
+    )
+}
+
+pub fn launch(
+    request: UnpackRequest,
+    app: Host,
+    backend: Arc<Backend>,
+    origin: JobOrigin,
+) -> Result<String, String> {
     if request.path.trim().is_empty() || request.output_dir.trim().is_empty() {
         return Err("请选择固件和解包输出目录".into());
     }
-    let backend = state.inner().clone();
     let id = uuid::Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut entry = HistoryEntry {
@@ -63,17 +89,20 @@ pub fn start_unpack(
         duration_ms: 0,
         message: "本地解包任务被中断".into(),
     };
-    backend.begin(&entry, cancel.clone())?;
+    backend.begin(&entry, cancel.clone(), origin)?;
     let job_id = id.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let start = Instant::now();
         let worker_app = app.clone();
+        let worker_backend = backend.clone();
         let worker_id = job_id.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let mut bytes = 0u64;
             let mut last = Instant::now();
             event(
                 &worker_app,
+                &worker_backend,
+                origin,
                 &worker_id,
                 "running",
                 "正在校验容器并解包；取消时会清理本次输出",
@@ -88,6 +117,8 @@ pub fn start_unpack(
                 if last.elapsed() >= Duration::from_millis(150) {
                     event(
                         &worker_app,
+                        &worker_backend,
+                        origin,
                         &worker_id,
                         "running",
                         "正在校验/解包固件",
@@ -124,7 +155,9 @@ pub fn start_unpack(
             Ok(()) => message,
             Err(e) => format!("{message}；历史保存失败：{e}"),
         };
-        event(&app, &job_id, status, &message, level, bytes);
+        event(
+            &app, &backend, origin, &job_id, status, &message, level, bytes,
+        );
     });
     Ok(id)
 }

@@ -1,8 +1,12 @@
-use crate::model::{HistoryEntry, OperationEvent, OperationKind};
+use crate::{
+    host::Host,
+    model::{HistoryEntry, OperationEvent, OperationKind},
+};
+#[cfg(feature = "desktop")]
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -12,15 +16,24 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as AsyncMutex;
 
 const HISTORY_LIMIT: usize = 100;
+const EVENT_LIMIT: usize = 1000;
 const REBOOT_TRANSITION: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy)]
+pub enum JobOrigin {
+    #[cfg(feature = "desktop")]
+    Desktop,
+    Mcp,
+}
 
 pub struct ActiveJob {
     pub id: String,
     pub cancel: Arc<AtomicBool>,
+    #[cfg(feature = "desktop")]
+    origin: JobOrigin,
 }
 
 pub struct Backend {
@@ -28,6 +41,7 @@ pub struct Backend {
     pub active: Mutex<Option<ActiveJob>>,
     expected_reboot_disconnects: AsyncMutex<HashMap<String, Instant>>,
     history: Mutex<Vec<HistoryEntry>>,
+    events: Mutex<VecDeque<OperationEvent>>,
     directory: PathBuf,
 }
 
@@ -62,6 +76,7 @@ impl Backend {
             active: Mutex::new(None),
             expected_reboot_disconnects: AsyncMutex::new(HashMap::new()),
             history: Mutex::new(history),
+            events: Mutex::new(VecDeque::new()),
             directory,
         })
     }
@@ -86,7 +101,12 @@ impl Backend {
         expected.keys().cloned().collect()
     }
 
-    pub fn begin(&self, entry: &HistoryEntry, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    pub fn begin(
+        &self,
+        entry: &HistoryEntry,
+        cancel: Arc<AtomicBool>,
+        _origin: JobOrigin,
+    ) -> Result<(), String> {
         let mut active = self
             .active
             .lock()
@@ -108,6 +128,8 @@ impl Backend {
         *active = Some(ActiveJob {
             id: entry.id.clone(),
             cancel,
+            #[cfg(feature = "desktop")]
+            origin: _origin,
         });
         Ok(())
     }
@@ -145,25 +167,62 @@ impl Backend {
         }
     }
 
-    pub fn warn_close(&self, app: &AppHandle) {
-        if let Ok(active) = self.active.lock() {
-            if let Some(job) = active.as_ref() {
-                let _ = app.emit(
-                    "operation-event",
-                    OperationEvent {
-                        job_id: job.id.clone(),
-                        status: "running".into(),
-                        stage: "close-protected".into(),
-                        progress: None,
-                        message: "任务运行期间不能退出。请先取消并等待任务到达安全边界并完成清理"
-                            .into(),
-                        level: "warning".into(),
-                        timestamp: Utc::now().to_rfc3339(),
-                        bytes_done: None,
-                        bytes_total: None,
-                    },
-                );
+    pub fn operation_events(
+        &self,
+        id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<OperationEvent>, String> {
+        let events = self.events.lock().map_err(|_| "无法读取任务日志")?;
+        let mut result: Vec<_> = events
+            .iter()
+            .rev()
+            .filter(|event| id.is_none_or(|id| id == event.job_id.as_str()))
+            .take(limit)
+            .cloned()
+            .collect();
+        result.reverse();
+        Ok(result)
+    }
+
+    pub fn publish_event(&self, app: &Host, origin: JobOrigin, event: OperationEvent) {
+        if let Ok(mut events) = self.events.lock() {
+            if events.len() == EVENT_LIMIT {
+                events.pop_front();
             }
+            events.push_back(event.clone());
+        }
+        let channel = match origin {
+            #[cfg(feature = "desktop")]
+            JobOrigin::Desktop => "operation-event",
+            JobOrigin::Mcp => "mcp-operation-event",
+        };
+        app.emit(channel, event);
+    }
+
+    #[cfg(feature = "desktop")]
+    pub fn warn_close(&self, app: &tauri::AppHandle) {
+        let job = self
+            .active
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().map(|job| (job.id.clone(), job.origin)));
+        if let Some((job_id, origin)) = job {
+            self.publish_event(
+                &Host::desktop(app.clone()),
+                origin,
+                OperationEvent {
+                    job_id,
+                    status: "running".into(),
+                    stage: "close-protected".into(),
+                    progress: None,
+                    message: "任务运行期间不能退出。请先取消并等待任务到达安全边界并完成清理"
+                        .into(),
+                    level: "warning".into(),
+                    timestamp: Utc::now().to_rfc3339(),
+                    bytes_done: None,
+                    bytes_total: None,
+                },
+            );
         }
     }
 }

@@ -52,6 +52,7 @@ import {
   type PickedFile,
 } from "./demo-files";
 import { inspectBrowserFirmware } from "./browser-files";
+import { McpSettings } from "./McpSettings";
 import { productName as appName, version as appVersion } from "../src-tauri/tauri.conf.json";
 import type {
   DeviceInfo,
@@ -64,6 +65,7 @@ import type {
 } from "./types";
 
 type Page = "flash" | "partitions" | "advanced";
+const PREFERENCES_STORAGE_KEY = "rkdevtool-next-preferences";
 type LogLine = { id: number; time: string; level: OperationEvent["level"]; text: string };
 type Preferences = {
   reboot: boolean;
@@ -210,6 +212,11 @@ export default function App() {
   const lastOperationLog = useRef<OperationEvent | null>(null);
   const [filter, setFilter] = useState<"all" | "error">("all");
   const [job, setJob] = useState<OperationEvent | null>(null);
+  const [mcpJob, setMcpJob] = useState<OperationEvent | null>(null);
+  const [mcpStopping, setMcpStopping] = useState(false);
+  const [mcpStorageBusy, setMcpStorageBusy] = useState(false);
+  const mcpJobRef = useRef<OperationEvent | null>(null);
+  const mcpStorageBusyRef = useRef(false);
   const [starting, setStarting] = useState(false);
   const [toolBusy, setToolBusy] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -249,10 +256,9 @@ export default function App() {
   const [eraseAddress, setEraseAddress] = useState("0x0");
   const [eraseSectors, setEraseSectors] = useState("0x2000");
   const [prefs, setPrefs] = useState<Preferences>(() => {
-    // Keep the existing storage key so renaming does not reset preferences.
     try {
       const p = JSON.parse(
-        localStorage.getItem("rk-studio-preferences") || "{}",
+        localStorage.getItem(PREFERENCES_STORAGE_KEY) || "{}",
       );
       return {
         reboot: p.reboot !== false,
@@ -264,9 +270,14 @@ export default function App() {
       return { reboot: true, theme: "light" };
     }
   });
-  const busy = toolBusy || starting || shortKind !== null || job?.status === "running";
+  const busy = toolBusy || starting || shortKind !== null ||
+    job?.status === "running" || mcpJob !== null || mcpStorageBusy;
   // This synchronous reservation belongs to the active operation, not the last render.
   const busyRef = useRef(false);
+  const deviceWorkBusy = useCallback(
+    () => busyRef.current || mcpJobRef.current !== null || mcpStorageBusyRef.current,
+    [],
+  );
   const scanInFlight = useRef<Promise<void> | null>(null);
   const scanGeneration = useRef(0);
   const manualScanRequested = useRef(false);
@@ -325,7 +336,7 @@ export default function App() {
   );
   const scan = useCallback(
     async (manual = false) => {
-      if (busyRef.current) return;
+      if (deviceWorkBusy()) return;
       if (manual) {
         manualScanRequested.current = true;
         setScanning(true);
@@ -335,7 +346,7 @@ export default function App() {
       const attempt = (async () => {
         try {
           const found = await api.scan();
-          if (generation !== scanGeneration.current || busyRef.current) return;
+          if (generation !== scanGeneration.current || deviceWorkBusy()) return;
           lastScanError.current = "";
           setDevices(found);
           setSelectedId(found.length === 1 ? found[0].id : "");
@@ -349,7 +360,7 @@ export default function App() {
           const message = errorText(e);
           // Gate contention is a deferred scan, not a failed USB enumeration.
           if (message.trim() === "设备任务运行中，扫描已暂停") return;
-          if (generation !== scanGeneration.current || busyRef.current) {
+          if (generation !== scanGeneration.current || deviceWorkBusy()) {
             addLog(message, "error");
             return;
           }
@@ -364,7 +375,7 @@ export default function App() {
       scanInFlight.current = attempt;
       await attempt;
     },
-    [addLog, fail],
+    [addLog, fail, deviceWorkBusy],
   );
   const beginDeviceWork = useCallback(() => {
     // Reserve synchronously so polling cannot race the pending scan or USB call.
@@ -429,6 +440,64 @@ export default function App() {
     };
   }, [appendLog, fail, scan]);
   useEffect(() => {
+    if (!native) return;
+    let disposed = false;
+    const listeners: Array<() => void> = [];
+    const invalidatePartitions = () => {
+      partitionGeneration.current += 1;
+      setReading(false);
+      setPartitions([]);
+      setErasePartition("");
+      setPending(null);
+    };
+    const subscriptions = [
+      api.subscribeMcpJob((event) => {
+        const previous = mcpJobRef.current;
+        if (event.status === "running") {
+          if (previous?.jobId !== event.jobId) {
+            scanGeneration.current += 1;
+            invalidatePartitions();
+            setMcpStopping(false);
+          }
+          mcpJobRef.current = event;
+          setMcpJob(event);
+        } else if (!previous || previous.jobId === event.jobId) {
+          mcpJobRef.current = null;
+          setMcpJob(null);
+          setMcpStopping(false);
+          invalidatePartitions();
+          void scan();
+        }
+        if (previous?.message !== event.message || previous?.stage !== event.stage ||
+            previous?.status !== event.status) {
+          appendLog({ time: event.timestamp, level: event.level, text: "MCP · " + event.message });
+        }
+        if (event.status === "failed") setError(event.message);
+      }),
+      api.subscribeMcpStorage((state) => {
+        mcpStorageBusyRef.current = state.running;
+        setMcpStorageBusy(state.running);
+        invalidatePartitions();
+        setStorage(state.currentStorage ?? "—");
+        setToolResult(null);
+        if (state.error) fail(state.error);
+        if (!state.running) void scan();
+      }),
+    ];
+    for (const subscription of subscriptions) {
+      void subscription.then((unlisten) => {
+        if (disposed) unlisten();
+        else listeners.push(unlisten);
+      }).catch((error) => {
+        if (!disposed) fail(errorText(error));
+      });
+    }
+    return () => {
+      disposed = true;
+      listeners.forEach((unlisten) => unlisten());
+    };
+  }, [appendLog, fail, scan]);
+  useEffect(() => {
     if (job?.status !== "completed") return;
     const timer = setTimeout(
       () =>
@@ -444,7 +513,7 @@ export default function App() {
     setErasePartition("");
     setToolResult(null);
     setStorage(demo ? "eMMC" : "—");
-    if (!native || !device || device.mode !== "loader" || busyRef.current) return;
+    if (!native || !device || device.mode !== "loader" || deviceWorkBusy()) return;
     const key = currentDeviceKey.current;
     const pendingScan = beginDeviceWork();
     setToolBusy(true);
@@ -459,7 +528,7 @@ export default function App() {
     })();
   }, [selectedId, device?.mode, addLog, beginDeviceWork]);
   useEffect(() => {
-    localStorage.setItem("rk-studio-preferences", JSON.stringify(prefs));
+    localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
     const media = matchMedia("(prefers-color-scheme: dark)");
     const update = () => {
       document.documentElement.dataset.theme =
@@ -644,7 +713,7 @@ export default function App() {
     request: OperationRequest,
     options?: DemoTaskOptions,
   ) => {
-    if (busyRef.current) return;
+    if (deviceWorkBusy()) return;
     if (request.deviceId && (devices.length !== 1 || devices[0].id !== request.deviceId)) {
       fail("请仅连接一台目标设备，重新确认后操作。"); return;
     }
@@ -795,7 +864,7 @@ export default function App() {
     }
   };
   const readPartitions = async () => {
-    if (!device || busyRef.current || !loaderMode) return;
+    if (!device || deviceWorkBusy() || !loaderMode) return;
     const key = currentDeviceKey.current;
     const generation = ++partitionGeneration.current;
     const pendingScan = beginDeviceWork();
@@ -870,7 +939,7 @@ export default function App() {
     });
   };
   const showInformation = async (title: string) => {
-    if ((!native && !demo) || !device || busyRef.current) return;
+    if ((!native && !demo) || !device || deviceWorkBusy()) return;
     if (native) {
       const queries: Record<string, DeviceQuery> = { "Flash ID": "flashId", "Flash 信息": "flashInfo", "Chip 信息": "chipInfo", Capability: "capability", "测试设备": "testDevice" };
       const key = currentDeviceKey.current;
@@ -913,7 +982,7 @@ export default function App() {
     addLog(title + " · 读取完成");
   };
   const switchStorage = async () => {
-    if (!device || !loaderMode || busyRef.current) return;
+    if (!device || !loaderMode || deviceWorkBusy()) return;
     const labels: Record<string, string> = { emmc: "eMMC", sd0: "SD", "spi-nor": "SPI NOR", "spi-nand": "SPI NAND", ram: "RAM" };
     if (demo) { setStorage(labels[storageChoice]); setToolResult({ title: "当前存储", values: [["介质", labels[storageChoice]]] }); return; }
     if (!native) return;
@@ -935,7 +1004,7 @@ export default function App() {
       if (!output) return;
       const request = { ...requestFor("unpack"), deviceId: "", firmwarePath: picked.path, outputPath: output };
       if (demo) { await submit(request, { label: "解包固件", targetName: "本机", stages: ["读取固件结构", "解包镜像", "整理输出文件"] }); return; }
-      if (!eventsReady || busyRef.current) return;
+      if (!eventsReady || deviceWorkBusy()) return;
       activeRequestRef.current = request; activeJobIdRef.current = null; setActiveJobId(null);
       const pendingScan = beginDeviceWork();
       lastOperationLog.current = null;
@@ -1071,6 +1140,26 @@ export default function App() {
         aria-labelledby={"tab-" + page}
       >
         <div className="workspace-content">
+        {(mcpJob || mcpStorageBusy) && (
+          <section className="panel mcp-activity" aria-label="MCP 任务">
+            <div>
+              <strong>MCP 任务进行中</strong>
+              <p>{mcpJob?.message || "正在切换存储介质"}</p>
+            </div>
+            {mcpJob?.progress != null && <span>{Math.round(mcpJob.progress)}%</span>}
+            {mcpJob && (
+              <button className="button secondary" disabled={mcpStopping} onClick={() => {
+                setMcpStopping(true);
+                void api.cancel(mcpJob.jobId).catch((error) => {
+                  setMcpStopping(false);
+                  fail(errorText(error));
+                });
+              }}>
+                <Square size={13} /> {mcpStopping ? "正在停止…" : "停止"}
+              </button>
+            )}
+          </section>
+        )}
         {page === "flash" && (
           <div className="flash-workspace">
             <div className="flash-panels">
@@ -2145,6 +2234,7 @@ export default function App() {
               ))}
             </div>
           </div>
+          <McpSettings />
           <div className="about-box">
             <img src="/icon.png" alt="" />
             <div>

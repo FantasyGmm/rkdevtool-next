@@ -476,21 +476,26 @@ fn parse_parameter(
                     return Err("Invalid mtdparts command-line token".into());
                 }
             }
-            definitions = Some(parse_mtdparts(&line[position + 9..])?);
+            definitions = Some(&line[position + 9..]);
         }
     }
     Ok((
-        definitions.ok_or("Parameter has no mtdparts definition")?,
+        parse_mtdparts(
+            definitions.ok_or("Parameter has no mtdparts definition")?,
+            saw_type,
+        )?,
         uuids,
     ))
 }
 
-fn parse_mtdparts(value: &str) -> Result<Vec<ParameterPartition>, String> {
+fn parse_mtdparts(value: &str, explicit_gpt: bool) -> Result<Vec<ParameterPartition>, String> {
     let (device, mut remaining) = value
         .trim_start()
         .split_once(':')
         .ok_or("mtdparts must name a device followed by a colon")?;
-    if device.is_empty() || device.chars().any(|ch| ch.is_whitespace() || ch == ';') {
+    if (device.is_empty() && !(explicit_gpt && value.starts_with(':')))
+        || device.chars().any(|ch| ch.is_whitespace() || ch == ';')
+    {
         return Err("Invalid mtdparts device name".into());
     }
     let mut result = Vec::new();
@@ -660,6 +665,39 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod verified_tests {
     use super::*;
+
+    #[test]
+    fn anonymous_mtdparts_builds_only_an_explicit_valid_gpt() {
+        let definition = "CMDLINE:mtdparts=:0x10@0x40(rootfs),-@0x50(userdata:grow)";
+        let image = build(&format!("{definition}\nTYPE: GPT"), 512).unwrap();
+        assert_eq!(image.partitions.len(), 2);
+        assert_eq!(
+            (
+                image.partitions[0].start_sector,
+                image.partitions[0].sectors
+            ),
+            (64, 16)
+        );
+        assert_eq!(
+            (
+                image.partitions[1].start_sector,
+                image.partitions[1].sectors
+            ),
+            (80, 399)
+        );
+
+        for parameter in [
+            definition.to_owned(),
+            format!("TYPE: MTD\n{definition}"),
+            "TYPE: GPT\nCMDLINE:mtdparts=:".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:16@64(rootfs);rk:16@80(other)".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:16@64(rootfs),16@72(other)".into(),
+            "TYPE: GPT\nCMDLINE:mtdparts=:-@64(rootfs:grow),16@80(other)".into(),
+        ] {
+            assert!(build(&parameter, 512).is_err(), "{parameter}");
+        }
+        assert!(build(&format!("TYPE: GPT\n{definition}"), 112).is_err());
+    }
 
     fn fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
         let image = build(

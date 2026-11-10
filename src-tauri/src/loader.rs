@@ -76,9 +76,9 @@ pub fn ram_blobs(file: &mut File, offset: u64, size: u64) -> Result<Vec<LoaderBl
 /// The caller must first confirm that the target is eMMC or SD, never NAND,
 /// SPI flash, RAM, or an unknown medium. `new_idb` is the device capability bit,
 /// not a request to convert a legacy loader. A FlashHead entry requires it.
-/// Write the returned data with native WriteLBA (0x15, image subcode 0), then
-/// read it back before resetting. This is the official `upgrade_loader` LBA
-/// 64 layout; it does not synthesize NAND pages, ECC, or redundant IDB copies.
+/// Write the returned data with native WriteLBA (0x15, image subcode 0).
+/// This is the official `upgrade_loader` LBA 64 layout; it does not
+/// synthesize NAND pages, ECC, or redundant IDB copies.
 pub fn idb_writes(
     file: &mut File,
     offset: u64,
@@ -148,6 +148,128 @@ pub fn idb_writes(
         sector: IDB_SECTOR,
         data: idb,
     }])
+}
+
+#[cfg(feature = "maintenance-cli")]
+fn unpacked_name(entry: &RkBootEntry, group: &str, index: usize) -> Result<String, String> {
+    let name = entry_name(entry)?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        return Err(format!("Invalid MiniLoader entry name: {name:?}"));
+    }
+    Ok(format!("{group}-{index:03}-{name}.bin"))
+}
+
+#[cfg(feature = "maintenance-cli")]
+pub(crate) fn unpack_container(
+    file: &mut File,
+    size: u64,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    use std::{fs, io::Write};
+
+    let loader = Loader::read(file, 0, size)?;
+    let mut plan = Vec::new();
+    for (group, entries) in [
+        ("471", &loader.ram_471),
+        ("472", &loader.ram_472),
+        ("flash", &loader.flash),
+    ] {
+        for (index, entry) in entries.iter().enumerate() {
+            let destination = output.join(unpacked_name(entry, group, index)?);
+            plan.push((destination, entry, group == "flash"));
+        }
+    }
+    if plan.is_empty() {
+        return Err("MiniLoader has no entries".into());
+    }
+    fs::create_dir(output).map_err(|e| format!("Create new output directory: {e}"))?;
+    for (destination, entry, flash) in plan {
+        let mut bytes = loader.data(entry).to_vec();
+        if flash {
+            for sector in bytes.chunks_mut(SECTOR_SIZE) {
+                rc4(sector);
+            }
+        } else {
+            rc4(&mut bytes);
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .and_then(|mut file| file.write_all(&bytes))
+            .map_err(|e| {
+                format!(
+                    "Write {}: {e}; unpack output may be partial",
+                    destination.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "maintenance-cli")]
+pub(crate) fn repack_container(
+    file: &mut File,
+    size: u64,
+    input: &std::path::Path,
+) -> Result<Vec<u8>, String> {
+    let loader = Loader::read(file, 0, size)?;
+    let groups = [
+        ("471", &loader.header.entry_471, &loader.ram_471),
+        ("472", &loader.header.entry_472, &loader.ram_472),
+        ("flash", &loader.header.entry_loader, &loader.flash),
+    ];
+    let count = groups
+        .iter()
+        .map(|(_, _, entries)| entries.len())
+        .sum::<usize>();
+    if count == 0 {
+        return Err("MiniLoader template has no entries".into());
+    }
+    let mut result = loader.bytes[..HEADER_SIZE].to_vec();
+    result.resize(HEADER_SIZE + count * ENTRY_SIZE, 0);
+    let mut table = HEADER_SIZE;
+    for (group_index, (group, source_table, entries)) in groups.into_iter().enumerate() {
+        let descriptor = 25 + group_index * 6;
+        put_u32(&mut result, descriptor + 1, table as u32);
+        for (index, entry) in entries.iter().enumerate() {
+            let path = input.join(unpacked_name(entry, group, index)?);
+            let mut source =
+                File::open(&path).map_err(|e| format!("Open {}: {e}", path.display()))?;
+            let info = source.metadata().map_err(|e| e.to_string())?;
+            if !info.is_file() || info.len() > MAX_LOADER_BYTES {
+                return Err(format!("Invalid loader component: {}", path.display()));
+            }
+            let size = info.len() as usize;
+            let aligned = aligned_len(size)?;
+            let offset = result.len();
+            if offset + aligned + 4 > MAX_LOADER_BYTES as usize {
+                return Err("Repacked MiniLoader exceeds 64 MiB".into());
+            }
+            let original = source_table.offset as usize + index * ENTRY_SIZE;
+            result[table..table + ENTRY_SIZE]
+                .copy_from_slice(&loader.bytes[original..original + ENTRY_SIZE]);
+            put_u32(&mut result, table + 45, offset as u32);
+            put_u32(&mut result, table + 49, aligned as u32);
+            result.resize(offset + aligned, 0);
+            source
+                .read_exact(&mut result[offset..offset + size])
+                .map_err(|e| format!("Read {}: {e}", path.display()))?;
+            if group == "flash" {
+                decode_sectors(&mut result[offset..]);
+            } else {
+                rc4(&mut result[offset..]);
+            }
+            table += ENTRY_SIZE;
+        }
+    }
+    let crc = rockchip_crc32(&result);
+    result.extend_from_slice(&crc.to_le_bytes());
+    Ok(result)
 }
 
 impl Loader {

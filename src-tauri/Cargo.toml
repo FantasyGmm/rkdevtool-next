@@ -1,30 +1,56 @@
 [package]
 name = "rkdevtool-next"
-version = "0.1.5"
+default-run = "rkdevtool-next"
+version = "0.1.6"
 description = "Native cross-platform Rockchip flashing tool"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "GPL-3.0-only"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog"]
+headless-cli = ["maintenance-cli", "tokio/signal"]
+maintenance-cli = ["dep:crc32fast"]
+
+[[bin]]
+name = "rkdevtool-next"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "rkdevtool-next-cli"
+path = "src/bin/rkdevtool-next-cli.rs"
+required-features = ["headless-cli"]
+
+[[bin]]
+name = "rkdevtool-maintenance"
+path = "src/bin/rkdevtool-maintenance.rs"
+required-features = ["maintenance-cli"]
 
 [lib]
 name = "rkdevtool_next_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 nusb = { version = "0.2.1", features = ["tokio"] }
 rockusb = { version = "=0.4.0", features = ["nusb"] }
 rockfile = "=0.1.2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "3.6", default-features = false, features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+subtle = "2.6"
+tokio-util = "0.7"
 
 # In-process archive readers; no external unzip/xz/gzip/bzip2 CLI at runtime.
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -32,3 +58,4 @@ flate2 = "1"
 xz2 = { version = "0.1", features = ["static"] }
 bzip2 = { version = "0.5", features = ["static"] }
 tempfile = "3"
+crc32fast = { version = "1", optional = true }

@@ -1,4 +1,4 @@
-name: Desktop build and release
+name: GUI and CLI build and release
 
 on:
   push:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build GUI (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -87,10 +87,84 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  build_cli:
+    name: Build CLI (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            binary: rkdevtool-next-cli
+          - platform: windows-x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: rkdevtool-next-cli.exe
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: rkdevtool-next-cli
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check application and release versions
+        run: npm run check:version
+      - name: Build and smoke-test standalone CLI
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          CLI_BINARY: ${{ matrix.binary }}
+        run: |
+          cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+            --target "$BUILD_TARGET" --no-default-features --features headless-cli --bin rkdevtool-next-cli
+          version="$(node -p 'require("./package.json").version')"
+          binary="src-tauri/target/$BUILD_TARGET/release/$CLI_BINARY"
+          [[ "$("$binary" --version | tr -d '\r')" == "rkdevtool-next-cli $version" ]]
+          "$binary" serve --help
+      - name: Package macOS or Linux CLI
+        if: runner.os != 'Windows'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          CLI_BINARY: ${{ matrix.binary }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          mkdir -p release
+          tar -czf "release/RKDevTool-Next-CLI_${version}_${PLATFORM}.tar.gz" \
+            -C "src-tauri/target/$BUILD_TARGET/release" "$CLI_BINARY"
+      - name: Package Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          CLI_BINARY: ${{ matrix.binary }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          $version = node -p 'require("./package.json").version'
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -LiteralPath "src-tauri/target/$env:BUILD_TARGET/release/$env:CLI_BINARY" `
+            -DestinationPath "release/RKDevTool-Next-CLI_${version}_$env:PLATFORM.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: RKDevTool-Next-CLI-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, build_cli]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -101,7 +175,7 @@ jobs:
           pattern: RKDevTool-Next-*
           path: release
           merge-multiple: true
-      - name: Publish complete installer set
+      - name: Publish complete GUI and CLI asset set
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -113,14 +187,18 @@ jobs:
           assets=(
             "release/RKDevTool-Next_${version}_macos-arm64.dmg"
             "release/RKDevTool-Next_${version}_windows-x64-setup.exe"
+            "release/RKDevTool-Next-CLI_${version}_macos-arm64.tar.gz"
+            "release/RKDevTool-Next-CLI_${version}_windows-x64.zip"
+            "release/RKDevTool-Next-CLI_${version}_linux-x64.tar.gz"
           )
           for asset in "${assets[@]}"; do
-            [[ -s "$asset" ]] || { echo "Missing installer: $asset" >&2; exit 1; }
+            [[ -s "$asset" ]] || { echo "Missing asset: $asset" >&2; exit 1; }
           done
           cat > release-notes.md <<'NOTES'
           ## 下载 / Downloads
           - **macos-arm64.dmg**：Apple Silicon（M 系列）Mac
           - **windows-x64-setup.exe**：Windows x64 安装程序
+          - **RKDevTool-Next-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。无需 GUI，可运行本机 MCP；烧录需显式启用 `--allow-flash`。
 
           macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包尚未配置代码签名，系统可能显示安全提示。Windows USB 通信需要目标 Rockusb 接口使用 WinUSB。
 

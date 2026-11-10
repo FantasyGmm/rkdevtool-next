@@ -8,6 +8,9 @@ import type {
   ArchiveInfo,
   FirmwareInfo,
   HistoryEntry,
+  McpFlashApproval,
+  McpStatus,
+  McpStorageState,
   OperationEvent,
   OperationRequest,
   PartitionInfo,
@@ -208,6 +211,16 @@ export const api = {
           backend: demo ? "交互演示" : "界面预览",
         };
   },
+  mcpStatus: () => invoke<McpStatus>("mcp_status"),
+  setMcpEnabled: (enabled: boolean) =>
+    invoke<McpStatus>("set_mcp_enabled", { enabled }),
+  setMcpFlashApproval: (flashApproval: McpFlashApproval) =>
+    invoke<McpStatus>("set_mcp_flash_approval", { flashApproval }),
+  resetMcpToken: () => invoke<McpStatus>("reset_mcp_token"),
+  subscribeMcpJob: (fn: (event: OperationEvent) => void) =>
+    listen<OperationEvent>("mcp-operation-event", (event) => fn(event.payload)),
+  subscribeMcpStorage: (fn: (state: McpStorageState) => void) =>
+    listen<McpStorageState>("mcp-storage-state", (event) => fn(event.payload)),
   async subscribe(fn: (event: OperationEvent) => void) {
     if (native)
       return listen<OperationEvent>("operation-event", (e) => fn(e.payload));

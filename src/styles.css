@@ -1283,6 +1283,71 @@ tr:last-child td {
   color: var(--muted);
   font-size: 13px;
 }
+.mcp-settings {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+.mcp-settings p,
+.mcp-activity p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mcp-settings p[role="alert"] {
+  color: var(--ink);
+}
+.mcp-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+.mcp-connection code {
+  display: inline-block;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--faint);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.mcp-manual-copy,
+.mcp-advanced {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.mcp-manual-copy textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--faint);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.mcp-advanced summary {
+  cursor: pointer;
+}
+.mcp-advanced button {
+  margin-top: 8px;
+}
+.mcp-activity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.mcp-activity > div {
+  flex: 1;
+}
 .about-box {
   display: flex;
   align-items: center;

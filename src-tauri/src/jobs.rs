@@ -1,9 +1,10 @@
+use crate::host::Host;
 use crate::{
     archive,
     firmware::{self, Image},
     gpt, loader,
     model::*,
-    state::Backend,
+    state::{Backend, JobOrigin},
     usb::{self, CHUNK_BYTES, Session, Target},
 };
 use chrono::Utc;
@@ -19,7 +20,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
 use tokio::sync::OwnedMutexGuard;
 
 const CANCELLED: &str = "__RK_STUDIO_CANCELLED_AT_SAFE_BOUNDARY__";
@@ -324,10 +324,11 @@ pub async fn prepare(request: OperationRequest) -> Result<Prepared, String> {
 }
 
 pub fn launch(
-    app: AppHandle,
+    app: Host,
     backend: Arc<Backend>,
     mut prepared: Prepared,
     gate: OwnedMutexGuard<()>,
+    origin: JobOrigin,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -353,11 +354,11 @@ pub fn launch(
         duration_ms: 0,
         message: "任务在完成前中断，请检查设备状态".into(),
     };
-    backend.begin(&entry, cancel.clone())?;
+    backend.begin(&entry, cancel.clone(), origin)?;
     let job_id = id.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let start = Instant::now();
-        let mut report = Reporter::new(app.clone(), job_id, cancel);
+        let mut report = Reporter::new(app, backend.clone(), origin, job_id, cancel);
         report.phase("preflight", "正在检查目标设备与固件", 0, 0.0, 0.0);
         let result = std::panic::AssertUnwindSafe(prepared.run(&mut report))
             .catch_unwind()
@@ -425,7 +426,9 @@ pub fn launch(
 }
 
 struct Reporter {
-    app: AppHandle,
+    app: Host,
+    backend: Arc<Backend>,
+    origin: JobOrigin,
     id: String,
     cancel: Arc<AtomicBool>,
     stage: String,
@@ -439,9 +442,17 @@ struct Reporter {
 }
 
 impl Reporter {
-    fn new(app: AppHandle, id: String, cancel: Arc<AtomicBool>) -> Self {
+    fn new(
+        app: Host,
+        backend: Arc<Backend>,
+        origin: JobOrigin,
+        id: String,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             app,
+            backend,
+            origin,
             id,
             cancel,
             stage: String::new(),
@@ -492,8 +503,9 @@ impl Reporter {
         } else {
             None
         };
-        let _ = self.app.emit(
-            "operation-event",
+        self.backend.publish_event(
+            &self.app,
+            self.origin,
             OperationEvent {
                 job_id: self.id.clone(),
                 status: status.into(),
@@ -921,23 +933,23 @@ impl Prepared {
             .filter(|p| p.name != "bootloader")
             .map(|p| p.size.div_ceil(512) * 512)
             .sum::<u64>();
-        let bytes = metadata_bytes * 2 + payload_bytes;
+        let bytes = metadata_bytes + payload_bytes;
         report.phase(
             "writing-gpt",
-            "已完成全部安全检查，正在写入并校验 GPT",
+            "已完成写入前检查，正在写入 GPT",
             bytes,
             25.0,
             75.0,
         );
         // Backup GPT first: interrupted writes leave the old primary readable.
-        write_metadata(
+        write_memory(
             self.session.as_mut().ok_or("USB 会话已关闭")?,
             capacity - 33,
             &disk.backup,
             report,
         )
         .await?;
-        write_metadata(
+        write_memory(
             self.session.as_mut().ok_or("USB 会话已关闭")?,
             0,
             &disk.primary,
@@ -946,7 +958,7 @@ impl Prepared {
         .await?;
         report.label("writing-idb", "正在持久化 MiniLoader 到 IDB 引导区");
         for write in idb {
-            write_metadata(
+            write_memory(
                 self.session.as_mut().ok_or("USB 会话已关闭")?,
                 write.sector,
                 &write.data,
@@ -1104,32 +1116,6 @@ async fn write_memory(
         report.check()?;
         let lba = start + (index * CHUNK_BYTES / 512) as u64;
         session.write(lba, chunk).await?;
-        report.advance(chunk.len() as u64);
-    }
-    Ok(())
-}
-
-async fn write_metadata(
-    session: &mut Session,
-    start: u64,
-    data: &[u8],
-    report: &mut Reporter,
-) -> Result<(), String> {
-    if data.is_empty() || data.len() % 512 != 0 {
-        return Err("写入数据不是完整的 512 字节扇区".into());
-    }
-    // GPT and IDB are boot metadata, always checked before writing the next
-    // chunk. Firmware payload writes do not use this readback path.
-    for (index, chunk) in data.chunks(CHUNK_BYTES).enumerate() {
-        let lba = start + (index * CHUNK_BYTES / 512) as u64;
-        write_memory(session, lba, chunk, report).await?;
-        let mut readback = vec![0; chunk.len()];
-        session.read(lba, &mut readback).await?;
-        if readback != chunk {
-            return Err(format!(
-                "GPT/IDB 元数据读回不匹配，起始 LBA {lba}；已停止后续写入"
-            ));
-        }
         report.advance(chunk.len() as u64);
     }
     Ok(())

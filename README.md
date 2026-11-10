@@ -63,6 +63,44 @@ macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签�
 - **操作反馈**：串行任务、实时进度、日志筛选与导出；向上翻阅日志时暂停自动跟随，回到底部后继续跟随。
 - **界面**：浅色 / 深色 / 跟随系统外观，固定导航，独立滚动的分区列表和日志区域。
 
+## 连接本机 MCP 客户端
+
+1. 在桌面应用的「偏好设置 → MCP 服务器」开启服务。首次运行默认关闭。
+2. 点击「复制接入 Skill」，把它粘贴给运行在同一台电脑上的 Agent。Skill 包含 MCP 地址和本机配置路径，Agent 可据此完成注册并用只读调用验证连接。
+3. 也可以手动接入：服务使用 Streamable HTTP，地址是 `http://127.0.0.1:38471/mcp`。应用会在自己的数据目录自动生成 `rkdevtool-next.mcp.json`，无需选择保存位置。客户端可以导入其中的 `mcpServers.rkdevtool-next` 条目；例如 Claude Code 可用 `claude --mcp-config "<配置文件路径>"`。
+
+[接入 Skill 源码](skills/rkdevtool-next/SKILL.md)不含密钥。若要撤销旧配置，关闭服务后在「高级设置」重置密钥，再开启服务并重新接入。
+
+MCP 烧录默认逐次批准。在「偏好设置 → MCP 服务器」勾选「允许自动烧录（无需批准）」后，持有本机 MCP 密钥的客户端可直接发起烧录（包括请求的烧录后重启）。设置自动保存、即时生效，关掉授权不会中止已开始的烧录。其他需要批准的操作（如擦除、单独重启、任务取消和导出）仍需在应用内确认；关闭 MCP 服务也不会中止已开始的任务。
+
+| 要做什么 | MCP 工具 |
+| --- | --- |
+| 枚举设备、读 GPT 和 Loader 诊断 | `scan_devices`、`read_partitions`、`query_device` |
+| 检查固件或压缩包、解包 RKFW/RKAF | `inspect_firmware`、`inspect_archive`、`start_unpack` |
+| 烧录整包、RAW、压缩包成员、分区和批量地址；备份、擦除、加载 Loader、重启或进入 Maskrom | `start_operation` |
+| 切换活动存储介质 | `switch_storage`（切换后重新读取 GPT） |
+| 查询进度、取消、查看历史和任务日志 | `get_operation`、`cancel_operation`、`get_history`、`get_logs`、`export_logs` |
+| 查看程序和后端版本 | `get_runtime_info` |
+
+扇区单位为 512 字节。分区操作传入 GPT 返回的名称、起始扇区和扇区数；整机备份从 LBA 0 开始，扇区数为设备字节容量除以 512。烧录默认不自动重启。
+
+### 无桌面环境：通过 CLI 启动 MCP
+
+从 Release 下载并解压对应平台的 CLI。退出桌面版和其他可能占用 USB 的烧录工具，在运行 MCP 客户端的同一台电脑上执行：
+
+```bash
+./rkdevtool-next-cli serve --state-dir ./rkdevtool-headless
+```
+
+默认只读。需要无人值守烧录时，停止服务，再在启动命令后加 `--allow-flash`。这只放开烧录（包括请求的烧录后重启）；擦除等其他写操作仍不会从 CLI 的 MCP 执行。服务只监听 `127.0.0.1:38471`，启动时打印配置文件路径，沿用上面的客户端接入方式；密钥不会打印。使用独立的私有状态目录，不与桌面版共享。按 Ctrl+C 停止接收新请求；正在烧录时，CLI 会等到任务结束再退出。
+
+从源码只构建 CLI，不需要 Node.js、Tauri 或系统 WebView：
+
+```bash
+cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+  --no-default-features --features headless-cli --bin rkdevtool-next-cli
+```
+
 ## 适用范围
 
 - Loader 和固件必须与实际开发板匹配；不支持受保护或签名 Loader 的通用下载流程。
@@ -72,9 +110,27 @@ macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签�
 - USB3 切换、清空序列号、安全模式检测和设备串口日志暂未开放。
 - Windows 的构建与打包由 CI 完成，真机 USB 通信仍需在对应 Windows 电脑和板卡上验证。当前 macOS 真机调试使用 RK3576；其他板卡请以实际兼容性为准。
 
+## 独立维护命令（实验性）
+
+维护命令用 Rust 和项目现有 RockUSB 后端实现，不调用外部烧录工具，也不接入 UI 或 MCP。发布的 CLI 用 `rkdevtool-next-cli maintenance --help` 查看这些命令。使用 USB 命令前关闭桌面应用并停止 MCP 服务，只连接一台处于 Loader 模式的设备。可先运行只读的 `ppt`、`rl`；写设备必须显式传入 `--allow-device-write`。
+
+```bash
+cargo run --locked --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --features maintenance-cli --bin rkdevtool-maintenance -- --help
+```
+
+| 命令 | 范围 |
+| --- | --- |
+| `ppt`、`rl` | 读取并验证 GPT；没有 GPT 特征时才尝试读取带 CRC 的旧 PARM。也可读取指定扇区到新文件。 |
+| `wl`、`wlx` | 按地址或经过验证的分区写入 RAW / Android sparse v1。先完整校验 sparse 结构及其 CRC（若提供）；跳过块按零写入。 |
+| `gpt`、`prm`、`ul` | 写入 GPT、旧 PARM、或持久化未签名 MiniLoader。GPT 镜像只接受符合当前容量的 67 扇区元数据，不自动迁移；`prm` 不覆盖 GPT；`ul` 要求已有可验证的分区布局。 |
+| `unpack`、`pack`、`tagspl` | 本地提取、以未签名 MiniLoader 模板重打包、或为 SPL 加前缀。重打包保留模板芯片、版本与条目顺序，不支持从任意 INI 新建 Loader。输出不覆盖现有文件。 |
+
+设备写入限定 eMMC/SD，逐块读回比较，失败立即停止后续写入。UBI/NAND 的擦块和坏块映射未接入。
+
 ## 从源码运行
 
-准备 **Node.js 24 LTS、Rust stable** 及 [Tauri 平台构建依赖](https://v2.tauri.app/start/prerequisites/)：
+准备 **Node.js 24 LTS、Rust stable（1.88+）** 及 [Tauri 平台构建依赖](https://v2.tauri.app/start/prerequisites/)：
 
 - macOS：Xcode Command Line Tools。
 - Windows：Visual Studio C++ Build Tools、Windows SDK、WebView2。
@@ -104,8 +160,8 @@ Linux 源码构建需安装 WebKitGTK 4.1、OpenSSL、AppIndicator、librsvg、p
 
 [GitHub Actions 工作流](.github/workflows/desktop-build.yml) 使用 GitHub-hosted runner：
 
-- 推送 `main`、提交 Pull Request，或手动运行：构建 **macOS arm64 / Windows x64**，安装包保存为 Actions artifacts。
-- 推送 `v*` 标签：校验标签与源码版本一致，构建两个平台；全部成功后，将两个安装包上传并发布到 GitHub Release。
+- 推送 `main`、提交 Pull Request，或手动运行：构建 **macOS arm64 / Windows x64** 桌面安装包，以及 **macOS arm64 / Windows x64 / Linux x64** CLI 压缩包，保存为 Actions artifacts。
+- 推送 `v*` 标签：校验标签与源码版本一致；全部构建成功后，将五个产物一起发布到 GitHub Release。
 - 任一平台失败：不发布新的 Release。上传失败时保留草稿，可修复流水线后重跑；已发布的版本不覆盖，后续修改使用新版本号。
 
 发布新版本时，同步修改以下版本号并提交：

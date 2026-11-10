@@ -68,6 +68,24 @@ export interface RuntimeInfo {
   backend: string;
 }
 
+export type McpFlashApproval = "required" | "automatic";
+
+export interface McpStatus {
+  enabled: boolean;
+  running: boolean;
+  endpoint: string;
+  configPath: string | null;
+  hasToken: boolean;
+  flashApproval: McpFlashApproval;
+  error: string | null;
+}
+
+export interface McpStorageState {
+  running: boolean;
+  currentStorage?: string | null;
+  error?: string | null;
+}
+
 export type DeviceQuery = "flashId" | "flashInfo" | "chipInfo" | "capability" | "testDevice" | "currentStorage";
 export interface DeviceReport { title: string; values: [string, string][]; currentStorage?: string; }
 export interface ArchiveInfo { path: string; format: "zip" | "gzip" | "xz" | "bzip2"; entries: { name: string; size: number | null }[]; }

@@ -21,6 +21,7 @@ export interface FirmwareInfo {
   name: string;
   size: number;
   kind: "rkfw" | "raw" | "loader";
+  hasEmbeddedLoader: boolean;
   model: string | null;
   manufacturer: string | null;
   partitions: { name: string; size: number; startSector: number | null }[];

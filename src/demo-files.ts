@@ -24,6 +24,7 @@ const raw = (path: string, bytes: number): FirmwareInfo => ({
   name: path.split("/").pop()!,
   size: bytes,
   kind: "raw",
+  hasEmbeddedLoader: false,
   model: null,
   manufacturer: null,
   partitions: [],
@@ -50,6 +51,7 @@ export const firmwareSamples: PickedFile[] = [
       path: "/demo/update.img",
       name: "update.img",
       kind: "rkfw",
+      hasEmbeddedLoader: true,
     },
   },
   {

@@ -40,6 +40,7 @@ pub struct FirmwareInfo {
     pub name: String,
     pub size: u64,
     pub kind: String,
+    pub has_embedded_loader: bool,
     pub model: Option<String>,
     pub manufacturer: Option<String>,
     pub partitions: Vec<FirmwarePartition>,

@@ -87,6 +87,7 @@ pub fn inspect(path: &str) -> Result<Image, String> {
             .to_owned(),
         size,
         kind: "raw".into(),
+        has_embedded_loader: false,
         model: None,
         manufacturer: None,
         partitions: Vec::new(),
@@ -147,6 +148,7 @@ pub fn inspect(path: &str) -> Result<Image, String> {
         inspect_raw(&mut file, &prefix, size, &mut info)?;
         None
     };
+    info.has_embedded_loader = package.as_ref().is_some_and(|p| p.loader_offset.is_some());
     Ok(Image { info, package })
 }
 

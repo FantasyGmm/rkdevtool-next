@@ -25,6 +25,7 @@ export const exampleFirmware: FirmwareInfo = {
   name: "OrangePi_5_RK3588S_Android12.img",
   size: 3875536896,
   kind: "rkfw",
+  hasEmbeddedLoader: true,
   model: "Orange Pi 5",
   manufacturer: "Orange Pi",
   partitions: [
@@ -41,6 +42,7 @@ if (demo && preview.get("image") === "raw") {
     path: "/demo/rockchip-debian.img",
     name: "rockchip-debian.img",
     kind: "raw",
+    hasEmbeddedLoader: false,
     model: null,
     manufacturer: null,
     partitions: [],
@@ -70,6 +72,7 @@ export type DemoTaskOptions = {
   label?: string;
   targetName?: string;
   archive?: boolean;
+  embeddedLoader?: boolean;
   stages?: string[];
 };
 const demoHistory: (HistoryEntry & { label?: string })[] = [];
@@ -95,7 +98,7 @@ function finishDemo(status: HistoryEntry["status"]) {
   if (!demoJob) return;
   const job = demoJob;
   if (job.timer) clearTimeout(job.timer);
-  if (status === "completed" && job.request.kind === "loader") {
+  if (status === "completed" && (job.request.kind === "loader" || job.options.embeddedLoader)) {
     exampleDevice.name = "Rockchip USB 设备";
     exampleDevice.chip = "RK3588";
     exampleDevice.chipModel = "RK3588";
@@ -295,6 +298,8 @@ export async function startDemoWorkflow(
             ]
           : request.kind !== "flash"
             ? operationStage(request.kind)
+            : options.embeddedLoader && n < 24
+              ? "加载内置 Loader 并等待重连"
             : n < (options.archive ? 28 : 8)
               ? options.archive
                 ? "解压镜像"

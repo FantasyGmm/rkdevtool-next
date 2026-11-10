@@ -74,6 +74,7 @@ type Preferences = {
 type Pending = {
   request: OperationRequest;
   target: DeviceInfo;
+  allowMaskrom?: boolean;
   label: string;
   detail: string;
   file: string | null;
@@ -291,6 +292,8 @@ export default function App() {
   const currentDeviceKey = useRef(deviceKey);
   currentDeviceKey.current = deviceKey;
   const loaderMode = device?.mode === "loader";
+  const canFlashFromMaskrom = device?.mode === "maskrom" && !archive &&
+    firmware?.kind === "rkfw" && firmware.hasEmbeddedLoader;
   const chipModel = loaderMode ? device?.chipModel?.trim() : null;
   const deviceTitle = deviceDisplayName(device);
   const isRaw = firmware?.kind === "raw";
@@ -772,7 +775,8 @@ export default function App() {
     kind: "flash" | "backup" | "erase",
     partition?: PartitionInfo,
   ) => {
-    if (!device || busy || !loaderMode) return;
+    const loadEmbeddedLoader = kind === "flash" && !partition && canFlashFromMaskrom;
+    if (!device || busy || (!loaderMode && !loadEmbeddedLoader)) return;
     const request = requestFor(kind);
     if (partition) request.partitionName = partition.name;
     let file: string | null = null;
@@ -827,6 +831,7 @@ export default function App() {
           detail = isRaw
             ? "起始扇区 " + address + " · " + size(firmware.size)
             : "按固件布局写入：" + (firmware.partitions.map((p) => p.name).join("、") || "以解析后的写入计划为准");
+          if (demo && loadEmbeddedLoader) options = { embeddedLoader: true };
           if (archive) options = { archive: true };
         }
       } else if (kind === "backup") {
@@ -853,6 +858,7 @@ export default function App() {
       setPending({
         request,
         target: { ...device },
+        allowMaskrom: loadEmbeddedLoader,
         label: operationLabels[kind],
         detail,
         file,
@@ -1060,7 +1066,7 @@ export default function App() {
   };
   const ready =
     !!device &&
-    loaderMode &&
+    (loaderMode || canFlashFromMaskrom) &&
     ((!!firmware && firmware.kind !== "loader") || (native && !!archive?.selected)) &&
     (!archive || archive.sample || native) &&
     !inspecting &&
@@ -1408,7 +1414,7 @@ export default function App() {
                 className="button primary start-button"
                 disabled={!ready || busy}
                 title={
-                  device?.mode === "maskrom" ? "请先加载 Loader" : undefined
+                  device?.mode === "maskrom" && !canFlashFromMaskrom ? "请先加载 Loader" : undefined
                 }
                 onClick={() => void prepare("flash")}
               >
@@ -2149,7 +2155,8 @@ export default function App() {
                 }
                 disabled={
                   devices.length !== 1 || !devices.some(
-                    (d) => d.id === pending.target.id && d.mode === "loader",
+                    (d) => d.id === pending.target.id &&
+                      (d.mode === "loader" || (d.mode === "maskrom" && pending.allowMaskrom)),
                   )
                 }
                 onClick={() => {

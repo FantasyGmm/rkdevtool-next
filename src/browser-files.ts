@@ -82,6 +82,7 @@ export async function inspectBrowserFirmware(file: File): Promise<FirmwareInfo> 
     name: file.name,
     size: file.size,
     kind,
+    hasEmbeddedLoader: false,
     model: null,
     manufacturer: null,
     partitions: [],

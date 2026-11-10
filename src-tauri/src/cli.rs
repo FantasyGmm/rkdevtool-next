@@ -11,6 +11,10 @@ The service is read-only unless started with --allow-flash.
 Ctrl-C stops accepting requests and waits for any active flash to finish.
 Use maintenance --help for standalone RockUSB maintenance commands.";
 
+fn print_help() {
+    println!("{HELP}\n\nWarning: {}", mcp::UNATTENDED_FLASH_WARNING);
+}
+
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     let mut args = args.into_iter();
     let command = args.next();
@@ -34,7 +38,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
                     }
                     Some("--allow-flash") if !allow_flash => allow_flash = true,
                     Some("--help" | "-h") => {
-                        println!("{HELP}");
+                        print_help();
                         return Ok(());
                     }
                     _ => return Err(format!("Invalid serve option {arg:?}\n\n{HELP}")),
@@ -54,7 +58,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
             Ok(())
         }
         Some("--help" | "-h") | None if args.next().is_none() => {
-            println!("{HELP}");
+            print_help();
             Ok(())
         }
         _ => Err(format!("Invalid command or arguments\n\n{HELP}")),

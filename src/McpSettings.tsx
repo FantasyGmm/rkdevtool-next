@@ -142,11 +142,12 @@ export function McpSettings() {
               checked={status?.flashApproval === "automatic"}
               disabled={working || status === null}
               onChange={(event) => void updateFlashApproval(event.target.checked ? "automatic" : "required")}
-              aria-describedby="mcp-flash-approval-help"
+              aria-describedby="mcp-flash-approval-help mcp-flash-approval-warning"
             />
             <span>
               <strong>允许自动烧录（无需批准）</strong>
               <small id="mcp-flash-approval-help">默认每次烧录都需批准。开启后，持有本机 MCP 密钥的客户端可直接覆盖设备数据。</small>
+              <small id="mcp-flash-approval-warning">无人值守烧录前请先备份，核对设备与固件。误写或中断可能导致设备无法启动。</small>
             </span>
           </label>
           {status?.hasToken && (

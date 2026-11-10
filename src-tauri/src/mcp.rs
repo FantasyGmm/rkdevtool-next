@@ -34,6 +34,8 @@ const HOST: &str = "127.0.0.1:38471";
 const ORIGIN: &str = "http://127.0.0.1:38471";
 const ENDPOINT: &str = "http://127.0.0.1:38471/mcp";
 const CLIENT_CONFIG_NAME: &str = "rkdevtool-next.mcp.json";
+#[cfg(feature = "headless-cli")]
+pub(crate) const UNATTENDED_FLASH_WARNING: &str = "Back up data and verify the target device and firmware before unattended flashing. An incorrect or interrupted write can leave the device unbootable.";
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -461,6 +463,9 @@ pub(crate) async fn serve_headless(directory: PathBuf, allow_flash: bool) -> Res
             "read-only"
         }
     );
+    if allow_flash {
+        eprintln!("Warning: {UNATTENDED_FLASH_WARNING}");
+    }
     let signal = tokio::select! {
         result = shutdown => Some(result),
         _ = &mut server.task => None,

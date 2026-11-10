@@ -73,6 +73,8 @@ macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签�
 
 MCP 烧录默认逐次批准。在「偏好设置 → MCP 服务器」勾选「允许自动烧录（无需批准）」后，持有本机 MCP 密钥的客户端可直接发起烧录（包括请求的烧录后重启）。设置自动保存、即时生效，关掉授权不会中止已开始的烧录。其他需要批准的操作（如擦除、单独重启、任务取消和导出）仍需在应用内确认；关闭 MCP 服务也不会中止已开始的任务。
 
+> **无人值守烧录风险（GUI / CLI）**：烧录会覆盖设备数据。请先备份，核对目标设备与固件；误写或中断可能导致设备无法启动。
+
 | 要做什么 | MCP 工具 |
 | --- | --- |
 | 枚举设备、读 GPT 和 Loader 诊断 | `scan_devices`、`read_partitions`、`query_device` |
@@ -178,8 +180,8 @@ src-tauri/tauri.conf.json
 
 ```bash
 npm run check:version
-git tag v0.1.6
-git push origin main v0.1.6
+git tag v0.1.7
+git push origin main v0.1.7
 ```
 
 工作流使用仓库内置的 `GITHUB_TOKEN` 发布，无需额外保存 GitHub PAT、Apple 证书或签名密钥。构建不连接开发板，也不执行烧录或擦除。

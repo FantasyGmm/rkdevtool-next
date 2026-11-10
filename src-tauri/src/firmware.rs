@@ -420,8 +420,6 @@ fn parse_archive(
             start_sector: Some(partition.start),
         })
         .collect();
-    info.warnings
-        .push("Archive integrity is verified before flashing".into());
     Ok(Package {
         archive_offset,
         archive_length: length,

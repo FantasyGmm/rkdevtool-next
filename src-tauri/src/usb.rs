@@ -18,42 +18,70 @@ pub struct Target {
     pub port: String,
 }
 
+fn is_rockusb_candidate(class: u8, subclass: u8, protocol: u8) -> bool {
+    // ADB is also vendor-specific and has two bulk endpoints.
+    class == 0xff && (subclass, protocol) != (0x42, 0x01)
+}
+
 pub async fn targets() -> Result<Vec<Target>, String> {
     let devices = rockusb::nusb::devices()
         .await
         .map_err(|e| format!("无法枚举 USB 设备：{e}"))?;
-    Ok(devices
-        .map(|usb| {
-            let id = identity(&usb);
-            let port = format!("{}:{:?}", usb.bus_id(), usb.port_chain());
-            // bcdUSB is only a hint: Rockchip's USB-PLUG deliberately keeps
-            // 0x0200, unlike legacy Loader's 0x0201. Its standard gadget name
-            // lets a fresh app discover it without probing a real Maskrom's
-            // bulk endpoints on every scan. Loader candidates are confirmed
-            // with a read-only ChipInfo request before displaying details.
-            let mode = if usb.usb_version() & 1 != 0
-                || usb.product_string() == Some("USB download gadget")
-            {
+    let mut targets = Vec::new();
+    for usb in devices {
+        let has_candidate = {
+            let mut interfaces = usb.interfaces().peekable();
+            interfaces.peek().is_some().then(|| {
+                interfaces.any(|i| is_rockusb_candidate(i.class(), i.subclass(), i.protocol()))
+            })
+        };
+        if has_candidate == Some(false) {
+            continue;
+        }
+        // WinUSB may omit the interface summary for non-composite devices.
+        // Read descriptors from the hub without claiming an interface.
+        #[cfg(target_os = "windows")]
+        if has_candidate.is_none()
+            && let Ok(device) = usb.open().await
+            && let Some(config) = device
+                .active_configuration()
+                .ok()
+                .or_else(|| device.configurations().next())
+            && !config
+                .interface_alt_settings()
+                .any(|i| is_rockusb_candidate(i.class(), i.subclass(), i.protocol()))
+        {
+            continue;
+        }
+        let id = identity(&usb);
+        let port = format!("{}:{:?}", usb.bus_id(), usb.port_chain());
+        // bcdUSB is only a hint: Rockchip's USB-PLUG deliberately keeps
+        // 0x0200, unlike legacy Loader's 0x0201. Its standard gadget name
+        // lets a fresh app discover it without probing a real Maskrom's
+        // bulk endpoints on every scan. Loader candidates are confirmed
+        // with a read-only ChipInfo request before displaying details.
+        let mode =
+            if usb.usb_version() & 1 != 0 || usb.product_string() == Some("USB download gadget") {
                 "loader"
             } else {
                 "maskrom"
             };
-            let info = DeviceInfo {
-                id,
-                // VID/PID identifies a USB product, not the board's SoC. In
-                // Maskrom no chip-info command is available before loading RAM.
-                name: "Rockchip USB 设备".into(),
-                chip: String::new(),
-                chip_model: None,
-                mode: mode.into(),
-                vid: "2207".into(),
-                pid: format!("{:04x}", usb.product_id()),
-                connection: format!("USB · {} · {:?}", port, usb.speed()),
-                capacity: None,
-            };
-            Target { usb, info, port }
-        })
-        .collect())
+        let info = DeviceInfo {
+            id,
+            // VID/PID identifies a USB product, not the board's SoC. In
+            // Maskrom no chip-info command is available before loading RAM.
+            name: "Rockchip USB 设备".into(),
+            chip: String::new(),
+            chip_model: None,
+            mode: mode.into(),
+            vid: "2207".into(),
+            pid: format!("{:04x}", usb.product_id()),
+            connection: format!("USB · {} · {:?}", port, usb.speed()),
+            capacity: None,
+        };
+        targets.push(Target { usb, info, port });
+    }
+    Ok(targets)
 }
 
 impl Target {
@@ -130,7 +158,7 @@ impl Session {
             .map_err(|e| format!("无法读取 USB 配置：{e}"))?;
         for alt in config.interface_alt_settings() {
             // RockUSB uses a vendor-class interface with bulk IN and OUT.
-            if alt.class() != 0xff {
+            if !is_rockusb_candidate(alt.class(), alt.subclass(), alt.protocol()) {
                 continue;
             }
             let input = alt.endpoints().find(|e| {

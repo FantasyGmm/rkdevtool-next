@@ -93,6 +93,18 @@ MCP 烧录默认逐次批准。在「偏好设置 → MCP 服务器」勾选「�
 
 扇区单位为 512 字节。分区操作传入 GPT 返回的名称、起始扇区和扇区数；整机备份从 LBA 0 开始，扇区数为设备字节容量除以 512。烧录默认不自动重启。
 
+### Codex 桌面还未注册服务器
+
+在运行 RKDevTool Next 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
+
+```bash
+config="/实际路径/rkdevtool-next.mcp.json"
+npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.get_runtime_info
+npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
+```
+
+这不会向 Codex 注册服务器，也无需读取或传递授权头。用相同方式调用 `start_operation` 时，可加 `--timeout 120000` 等待桌面批准，再用返回的 `jobId` 调用 `get_operation` 查询进度；超时后不要直接重复提交。
+
 ### 无桌面环境：通过 CLI 启动 MCP
 
 从 Release 下载并解压对应平台的 CLI。退出桌面版和其他可能占用 USB 的烧录工具，在运行 MCP 客户端的同一台电脑上执行：

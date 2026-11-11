@@ -13,8 +13,8 @@
     "windows": [{
       "label": "main",
       "title": "RKDevTool Next",
-      "width": 900,
-      "height": 680,
+      "width": 1080,
+      "height": 820,
       "minWidth": 780,
       "minHeight": 600,
       "decorations": true,

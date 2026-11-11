@@ -4,12 +4,16 @@ use nusb::transfer::{Buffer, Bulk, ControlOut, ControlType, In, Out, Recipient};
 use nusb::{DeviceInfo as UsbInfo, Endpoint, Interface};
 use rockusb::{
     operation::{self, OperationSteps, UsbStep},
-    protocol::{FlashInfo, ResetOpcode},
+    protocol::{ChipInfo, FlashInfo, ResetOpcode},
 };
-use std::time::Duration;
+use std::{collections::BTreeSet, sync::Mutex, time::Duration};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 pub const CHUNK_BYTES: usize = 128 * 1024;
+
+// A Loader can keep the same descriptors as Maskrom. Remember a successful
+// handshake only for that USB enumeration, not for the PID or physical port.
+static CONFIRMED_LOADERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 #[derive(Clone)]
 pub struct Target {
@@ -81,6 +85,13 @@ pub async fn targets() -> Result<Vec<Target>, String> {
         };
         targets.push(Target { usb, info, port });
     }
+    let mut confirmed = CONFIRMED_LOADERS.lock().unwrap();
+    confirmed.retain(|id| targets.iter().any(|target| &target.info.id == id));
+    for target in &mut targets {
+        if confirmed.contains(&target.info.id) {
+            target.info.mode = "loader".into();
+        }
+    }
     Ok(targets)
 }
 
@@ -103,6 +114,12 @@ impl Target {
 pub async fn probe_loader(target: &mut Target) -> Result<Session, String> {
     let mut session = Session::open(target).await?;
     let chip = session.chip_identity().await?;
+    if target.info.mode == "maskrom" {
+        CONFIRMED_LOADERS
+            .lock()
+            .unwrap()
+            .insert(target.info.id.clone());
+    }
     target.info.mode = "loader".into();
     target.info.chip = chip.raw;
     target.info.chip_model = chip.model;
@@ -131,6 +148,7 @@ pub async fn resolve(id: &str) -> Result<Target, String> {
 
 pub struct Session {
     _device: nusb::Device,
+    device_id: String,
     interface: Interface,
     input: Endpoint<Bulk, In>,
     output: Endpoint<Bulk, Out>,
@@ -188,6 +206,7 @@ impl Session {
                     .map_err(|e| e.to_string())?;
                 return Ok(Self {
                     _device: device.clone(),
+                    device_id: target.info.id.clone(),
                     interface,
                     input,
                     output,
@@ -197,7 +216,18 @@ impl Session {
         Err("未找到 RockUSB 双向批量接口；该设备可能不是烧录模式".into())
     }
 
-    pub async fn execute<O, T>(&mut self, mut op: O) -> Result<T, String>
+    pub async fn execute<O, T>(&mut self, op: O) -> Result<T, String>
+    where
+        O: OperationSteps<T>,
+    {
+        self.execute_with_reply_len_echo(op, None).await
+    }
+
+    async fn execute_with_reply_len_echo<O, T>(
+        &mut self,
+        mut op: O,
+        reply_len_echo: Option<u32>,
+    ) -> Result<T, String>
     where
         O: OperationSteps<T>,
     {
@@ -206,7 +236,16 @@ impl Session {
                 UsbStep::WriteBulk { data } => self.bulk_out(data).await?,
                 UsbStep::ReadBulk { data } => {
                     self.bulk_in(data).await?;
-                    if data.len() == 13 && &data[..4] == b"USBS" && data[8..12] != [0, 0, 0, 0] {
+                    // Some USB-PLUG loaders echo the big-endian reply length
+                    // in the CSW despite sending every byte. Only opt in for
+                    // known metadata reads; bulk_in enforces exact lengths and
+                    // rockusb still checks the CSW signature, tag and status.
+                    if data.len() == 13
+                        && &data[..4] == b"USBS"
+                        && data[8..12] != [0, 0, 0, 0]
+                        && !reply_len_echo
+                            .is_some_and(|len| data[8..12] == len.to_be_bytes() && data[12] == 0)
+                    {
                         return Err("设备返回不完整传输（CSW residue 非零）；操作已停止".into());
                     }
                 }
@@ -276,13 +315,18 @@ impl Session {
     }
 
     pub async fn flash_info(&mut self) -> Result<FlashInfo, String> {
-        self.execute(operation::flash_info()).await
+        self.execute_with_reply_len_echo(operation::flash_info(), Some(11))
+            .await
+    }
+    pub async fn chip_info(&mut self) -> Result<ChipInfo, String> {
+        self.execute_with_reply_len_echo(operation::chip_info(), Some(16))
+            .await
     }
     pub async fn chip_id(&mut self) -> Result<String, String> {
         Ok(self.chip_identity().await?.raw)
     }
     async fn chip_identity(&mut self) -> Result<ChipIdentity, String> {
-        let chip = self.execute(operation::chip_info()).await?;
+        let chip = self.chip_info().await?;
         let data = chip.inner();
         let raw = format!(
             "Chip ID {}",
@@ -331,6 +375,8 @@ impl Session {
             .await
     }
     pub async fn reboot(&mut self, maskrom: bool) -> Result<(), String> {
+        // The device might reset even if the final USB status is lost.
+        CONFIRMED_LOADERS.lock().unwrap().remove(&self.device_id);
         self.execute(operation::reset_device(if maskrom {
             ResetOpcode::Maskrom
         } else {

@@ -135,7 +135,7 @@ pub async fn read_query(
             ))
         }
         "chipInfo" => {
-            let chip = session.execute(operation::chip_info()).await?;
+            let chip = session.chip_info().await?;
             let data = chip.inner();
             let raw = hex(data);
             let value = match usb::chip_model(data) {
@@ -164,7 +164,7 @@ pub async fn read_query(
         }
         "testDevice" => {
             let started = Instant::now();
-            let chip = session.execute(operation::chip_info()).await?;
+            let chip = session.chip_info().await?;
             Ok(report(
                 "设备连接测试",
                 vec![

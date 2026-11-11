@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rkdevtool-next"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "axum",
  "bzip2",

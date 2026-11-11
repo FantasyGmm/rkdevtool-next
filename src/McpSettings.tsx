@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Copy, RefreshCw } from "lucide-react";
-import { api, native } from "./bridge";
-import type { McpFlashApproval, McpStatus } from "./types";
+import { native } from "./bridge";
+import type { McpFlashApproval, McpSettingsDraft, McpStatus } from "./types";
 import skill from "../skills/rkdevtool-next/SKILL.md?raw";
 
 async function copyText(text: string): Promise<boolean> {
@@ -31,75 +31,18 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function McpSettings() {
-  const [status, setStatus] = useState<McpStatus | null>(null);
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function McpSettings({ status, draft, saving, loadError, reload, change }: {
+  status: McpStatus | null;
+  draft: McpSettingsDraft | null;
+  saving: boolean;
+  loadError: string | null;
+  reload: () => void;
+  change: (draft: McpSettingsDraft) => void;
+}) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "manual">("idle");
   const setup = status?.running && status.configPath
     ? `${skill.trim()}\n\n## Local connection\n\n- Server URL: ${status.endpoint}\n- Generated MCP configuration: ${JSON.stringify(status.configPath)}\n`
     : null;
-
-  useEffect(() => {
-    if (!native) return;
-    let mounted = true;
-    void api.mcpStatus().then(
-      (value) => { if (mounted) setStatus(value); },
-      (reason) => { if (mounted) setError(String(reason)); },
-    );
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const loadStatus = async () => {
-    setWorking(true);
-    setError(null);
-    try {
-      setStatus(await api.mcpStatus());
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  const update = async (enabled: boolean) => {
-    setWorking(true);
-    setError(null);
-    setCopyState("idle");
-    try {
-      setStatus(await api.setMcpEnabled(enabled));
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  const updateFlashApproval = async (flashApproval: McpFlashApproval) => {
-    setWorking(true);
-    setError(null);
-    try {
-      setStatus(await api.setMcpFlashApproval(flashApproval));
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  const resetToken = async () => {
-    setWorking(true);
-    setError(null);
-    try {
-      setStatus(await api.resetMcpToken());
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setWorking(false);
-    }
-  };
 
   return (
     <section className="settings-group mcp-settings" aria-labelledby="mcp-settings-title">
@@ -111,9 +54,11 @@ export function McpSettings() {
           <label className="settings-checkbox">
             <input
               type="checkbox"
-              checked={status?.enabled ?? false}
-              disabled={working || status === null}
-              onChange={(event) => void update(event.target.checked)}
+              checked={draft?.enabled ?? false}
+              disabled={saving || draft === null}
+              onChange={(event) => {
+                if (draft) change({ ...draft, enabled: event.target.checked, resetToken: false });
+              }}
             />
             <strong>启用本机 MCP 服务</strong>
           </label>
@@ -121,7 +66,7 @@ export function McpSettings() {
             <>
               <div className="mcp-connection">
                 <code title="本机服务地址">{status.endpoint}</code>
-                <button className="button secondary" disabled={working} onClick={async () => {
+                <button className="button secondary" disabled={saving} onClick={async () => {
                   setCopyState(await copyText(setup) ? "copied" : "manual");
                 }}>
                   <Copy size={14} />
@@ -136,40 +81,52 @@ export function McpSettings() {
               )}
             </>
           )}
-          <label className="settings-checkbox">
-            <input
-              type="checkbox"
-              checked={status?.flashApproval === "automatic"}
-              disabled={working || status === null}
-              onChange={(event) => void updateFlashApproval(event.target.checked ? "automatic" : "required")}
-              aria-describedby="mcp-flash-approval-help mcp-flash-approval-warning"
-            />
-            <span>
-              <strong>允许自动烧录（无需批准）</strong>
-              <small id="mcp-flash-approval-help">默认每次烧录都需批准。开启后，持有本机 MCP 密钥的客户端可直接覆盖设备数据。</small>
-              <small id="mcp-flash-approval-warning">无人值守烧录前请先备份，核对设备与固件。误写或中断可能导致设备无法启动。</small>
-            </span>
+          <label className="mcp-approval">
+            <strong>MCP 授权模式</strong>
+            <select
+              value={draft?.flashApproval ?? "required"}
+              disabled={saving || draft === null}
+              onChange={(event) => {
+                if (draft) change({ ...draft, flashApproval: event.target.value as McpFlashApproval });
+              }}
+              aria-describedby="mcp-approval-warning"
+            >
+              <option value="required">逐次批准（默认）</option>
+              <option value="automatic">仅烧录免批准</option>
+              <option value="unattended">全权限无人值守（高风险）</option>
+            </select>
           </label>
+          <p id="mcp-approval-warning" className="mcp-approval-warning">
+            <strong>高风险：</strong>全权限无人值守允许持有本机 MCP 密钥的客户端不经确认地擦除、烧录、加载 Loader、重启、备份及导出文件。误操作可能永久丢失数据或使设备无法启动。只向可信客户端提供配置，先备份，用完切回逐次批准。
+          </p>
           {status?.hasToken && (
             <details className="mcp-advanced">
               <summary>高级设置</summary>
-              <button className="button secondary" disabled={working || status.enabled} onClick={() => void resetToken()}>
-                <RefreshCw size={14} /> 重置密钥
-              </button>
-              <p>{status.enabled ? "关闭服务后可以重置密钥。" : "重置后，原客户端需重新接入。"}</p>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={draft?.resetToken ?? false}
+                  disabled={saving || !draft || status.enabled || draft.enabled}
+                  onChange={(event) => {
+                    if (draft) change({ ...draft, resetToken: event.target.checked });
+                  }}
+                />
+                <span>
+                  <strong>保存时重置 MCP 密钥</strong>
+                  <small>{status.enabled ? "先保存关闭服务的设置。" : "重置后，原客户端需重新接入。"}</small>
+                </span>
+              </label>
             </details>
           )}
-          {status?.enabled && !status.running && (
-            <button className="button secondary" disabled={working} onClick={() => void update(true)}>
-              <RefreshCw size={15} /> 重试启动
-            </button>
+          {status?.enabled && !status.running && draft?.enabled && (
+            <p>点击「保存」可重试启动 MCP 服务。</p>
           )}
-          {!status && (error || working) && (
-            <button className="button secondary" disabled={working} onClick={() => void loadStatus()}>
+          {!status && loadError && (
+            <button className="button secondary" disabled={saving} onClick={reload}>
               <RefreshCw size={15} /> 重新读取状态
             </button>
           )}
-          {(error || status?.error) && <p role="alert">{error || status?.error}</p>}
+          {(loadError || status?.error) && <p role="alert">{loadError || status?.error}</p>}
         </>
       )}
     </section>

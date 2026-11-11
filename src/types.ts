@@ -69,7 +69,13 @@ export interface RuntimeInfo {
   backend: string;
 }
 
-export type McpFlashApproval = "required" | "automatic";
+export type McpFlashApproval = "required" | "automatic" | "unattended";
+
+export interface McpSettingsDraft {
+  enabled: boolean;
+  flashApproval: McpFlashApproval;
+  resetToken: boolean;
+}
 
 export interface McpStatus {
   enabled: boolean;

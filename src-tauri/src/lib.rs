@@ -2,6 +2,8 @@ mod advanced;
 mod archive;
 #[cfg(feature = "headless-cli")]
 pub mod cli;
+#[cfg(feature = "desktop")]
+mod dialogs;
 mod firmware;
 mod gpt;
 mod host;
@@ -212,6 +214,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             advanced::query_device,
             advanced::switch_storage,
+            dialogs::choose_path,
             local_jobs::start_unpack,
             scan_devices,
             inspect_firmware,
@@ -223,9 +226,7 @@ pub fn run() {
             export_logs,
             get_runtime_info,
             mcp::mcp_status,
-            mcp::set_mcp_enabled,
-            mcp::set_mcp_flash_approval,
-            mcp::reset_mcp_token
+            mcp::save_mcp_settings
         ])
         .build(tauri::generate_context!())
         .expect("RKDevTool Next failed to initialize");

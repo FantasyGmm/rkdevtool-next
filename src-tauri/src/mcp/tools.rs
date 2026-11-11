@@ -1,4 +1,6 @@
-use super::{Scope, write_new_file};
+use super::{Approval, Scope, write_new_file};
+#[cfg(feature = "desktop")]
+use crate::dialogs::DesktopDialogs;
 use crate::{
     advanced,
     host::Host,
@@ -21,9 +23,8 @@ use std::{fs, path::Path, sync::Arc};
 use tauri::Manager;
 #[cfg(feature = "desktop")]
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-use tokio::sync::Semaphore;
 #[cfg(feature = "desktop")]
-use tokio::sync::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, oneshot};
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -200,9 +201,9 @@ impl StartArgs {
 pub(super) struct Tools {
     host: Host,
     backend: Arc<Backend>,
-    #[cfg(feature = "desktop")]
-    prompt: Arc<Semaphore>,
     scope: Scope,
+    #[cfg(feature = "desktop")]
+    dialogs: Arc<DesktopDialogs>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -211,15 +212,15 @@ impl Tools {
     pub(super) fn new(
         host: Host,
         backend: Arc<Backend>,
-        _prompt: Arc<Semaphore>,
         scope: Scope,
+        #[cfg(feature = "desktop")] dialogs: Arc<DesktopDialogs>,
     ) -> Self {
         Self {
             host,
             backend,
-            #[cfg(feature = "desktop")]
-            prompt: _prompt,
             scope,
+            #[cfg(feature = "desktop")]
+            dialogs,
             tool_router: Self::tool_router(),
         }
     }
@@ -257,7 +258,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Switch the Loader's active storage. Requires desktop approval. Discard previous partition results and scan again."
+        description = "Switch the Loader's active storage. Desktop only; approval required unless full unattended access is enabled. Discard previous partition results and scan again."
     )]
     async fn switch_storage(&self, Parameters(args): Parameters<StorageArgs>) -> CallToolResult {
         result(self.switch(args).await)
@@ -271,14 +272,14 @@ impl Tools {
     }
 
     #[tool(
-        description = "Request a device job: flash RKFW/RKAF, RAW, archive member, or RAW batch; back up a whole device, partition or LBA range; erase a range or partition; load a RAM Loader, reboot, or enter Maskrom. Use read_partitions for partition ranges; whole device is startSector=0 and sectors=capacity/512. Requires desktop approval unless automatic flash is enabled locally and this is a flash job. Returns jobId; poll get_operation."
+        description = "Request a device job: flash RKFW/RKAF, RAW, archive member, or RAW batch; back up a whole device, partition or LBA range; erase a range or partition; load a RAM Loader, reboot, or enter Maskrom. Use read_partitions for partition ranges; whole device is startSector=0 and sectors=capacity/512. Desktop approval depends on local settings; headless mode only permits flash jobs with --allow-flash. Returns jobId; poll get_operation."
     )]
     async fn start_operation(&self, Parameters(args): Parameters<StartArgs>) -> CallToolResult {
         result(self.start(args).await.map(|id| json!({ "jobId": id })))
     }
 
     #[tool(
-        description = "Validate and unpack RKFW/RKAF members into a new child of an existing local directory. Requires desktop approval. Returns jobId."
+        description = "Validate and unpack RKFW/RKAF members into a new child of an existing local directory. Desktop only; approval required unless full unattended access is enabled. Returns jobId."
     )]
     async fn start_unpack(&self, Parameters(args): Parameters<UnpackArgs>) -> CallToolResult {
         result(self.unpack(args).await.map(|id| json!({ "jobId": id })))
@@ -292,19 +293,24 @@ impl Tools {
     }
 
     #[tool(
-        description = "Request cancellation at the next safe block boundary. Requires desktop approval. Already written sectors are not rolled back."
+        description = "Request cancellation at the next safe block boundary. Desktop only; approval required unless full unattended access is enabled. Already written sectors are not rolled back."
     )]
     async fn cancel_operation(&self, Parameters(args): Parameters<JobArgs>) -> CallToolResult {
         let outcome = async {
             if !self.active(&args.job_id)? {
                 return Err("任务已结束或不是当前任务。".into());
             }
-            self.approve(format!(
-                "MCP 客户端请求停止任务 {}。已写入的数据不会回滚。",
-                args.job_id
-            ))
-            .await?;
-            self.scope.commit(|| self.backend.cancel(&args.job_id))?;
+            let approval = self
+                .approve(
+                    false,
+                    format!(
+                        "MCP 客户端请求停止任务 {}。已写入的数据不会回滚。",
+                        args.job_id
+                    ),
+                )
+                .await?;
+            self.scope
+                .commit(approval, || self.backend.cancel(&args.job_id))?;
             Ok(json!({ "cancellationRequested": true }))
         }
         .await;
@@ -331,7 +337,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Export this session's recent backend task logs to a new local file. Requires desktop approval; never overwrites an existing file."
+        description = "Export this session's recent backend task logs to a new local file. Desktop only; approval required unless full unattended access is enabled. Never overwrites an existing file."
     )]
     async fn export_logs(&self, Parameters(args): Parameters<FileArgs>) -> CallToolResult {
         let outcome = async {
@@ -349,16 +355,22 @@ impl Tools {
                     )
                 })
                 .collect();
-            self.approve(format!(
-                "MCP 客户端请求将 {} 条任务日志保存到：\n{:?}",
-                events.len(),
-                args.path
-            ))
-            .await?;
+            let approval = self
+                .approve(
+                    false,
+                    format!(
+                        "MCP 客户端请求将 {} 条任务日志保存到：\n{:?}",
+                        events.len(),
+                        args.path
+                    ),
+                )
+                .await?;
             let scope = self.scope.clone();
             let path = args.path.clone();
             tokio::task::spawn_blocking(move || {
-                scope.commit(|| write_new_file(Path::new(&path), contents.as_bytes()))
+                scope.commit(approval, || {
+                    write_new_file(Path::new(&path), contents.as_bytes())
+                })
             })
             .await
             .map_err(|e| format!("日志导出任务异常：{e}"))??;
@@ -385,7 +397,7 @@ impl ServerHandler for Tools {
             .with_instructions(if self.host.is_headless() {
                 "Headless RKDevTool Next. Scan before addressing a device. The server is read-only unless started with --allow-flash, which permits flash jobs only. Poll get_operation for job progress."
             } else {
-                "Local RKDevTool Next desktop tools. Scan before addressing a device. Changes and exports require desktop approval, except flash jobs when automatic flash is enabled in settings. Poll get_operation for job progress."
+                "Local RKDevTool Next desktop tools. Scan before addressing a device. By default, changes and exports require desktop approval. The local policy can allow only flash jobs, or all supported operations, without prompts. Poll get_operation for job progress."
             }.to_string())
     }
 }
@@ -397,17 +409,21 @@ impl Tools {
         if target.info.mode != "loader" || self.backend.is_busy() {
             return Err("仅可在设备空闲且处于 Loader 模式时切换存储。".into());
         }
-        self.approve(format!(
-            "MCP 客户端请求切换存储。\n目标：{}\n新介质：{}\n切换后需要重新读取分区。",
-            target.description(),
-            args.storage
-        ))
-        .await?;
+        let approval = self
+            .approve(
+                false,
+                format!(
+                    "MCP 客户端请求切换存储。\n目标：{}\n新介质：{}\n切换后需要重新读取分区。",
+                    target.description(),
+                    args.storage
+                ),
+            )
+            .await?;
         let backend = self.backend.clone();
         let host = self.host.clone();
         // Keep the switch and its UI invalidation alive after admission, even if
         // the HTTP client disconnects after the USB command has been sent.
-        let task = self.scope.commit(|| {
+        let task = self.scope.commit(approval, || {
             let gate = advanced::reserve_storage_change(&backend)?;
             Ok(tokio::spawn(async move {
                 host.emit("mcp-storage-state", json!({ "running": true }));
@@ -433,12 +449,16 @@ impl Tools {
         if self.backend.is_busy() {
             return Err("已有任务正在运行，请勿重复提交。".into());
         }
-        self.approve(format!(
-            "MCP 客户端请求解包固件：\n{:?}\n在此目录下新建子目录：\n{:?}",
-            args.path, args.output_dir
-        ))
-        .await?;
-        self.scope.commit(|| {
+        let approval = self
+            .approve(
+                false,
+                format!(
+                    "MCP 客户端请求解包固件：\n{:?}\n在此目录下新建子目录：\n{:?}",
+                    args.path, args.output_dir
+                ),
+            )
+            .await?;
+        self.scope.commit(approval, || {
             local_jobs::launch(
                 local_jobs::UnpackRequest {
                     path: args.path,
@@ -453,10 +473,9 @@ impl Tools {
 
     async fn start(&self, args: StartArgs) -> Result<String, String> {
         let mut request = args.request()?;
-        let automatic_flash =
-            request.kind == OperationKind::Flash && self.scope.allows_automatic_flash()?;
-        if !automatic_flash && self.host.is_headless() {
-            return Err(if request.kind == OperationKind::Flash {
+        let flash = request.kind == OperationKind::Flash;
+        if self.host.is_headless() && !self.scope.allows_without_prompt(flash)? {
+            return Err(if flash {
                 "CLI 的 MCP 默认只读。要允许自动烧录，请用 --allow-flash 启动服务。"
             } else {
                 "CLI 的 MCP 不允许这项操作；请在桌面版批准，或使用对应的 CLI 命令。"
@@ -528,12 +547,10 @@ impl Tools {
                 if request.reboot { "是" } else { "否" }
             ));
         }
-        if !automatic_flash {
-            self.approve(message).await?;
-        }
+        let approval = self.approve(flash, message).await?;
         request.confirmed = true;
         let (prepared, gate) = crate::prepare_operation(&self.backend, request).await?;
-        self.scope.commit_operation(automatic_flash, || {
+        self.scope.commit(approval, || {
             crate::jobs::launch(
                 self.host.clone(),
                 self.backend.clone(),
@@ -570,24 +587,40 @@ impl Tools {
         Err("找不到此任务。".into())
     }
 
-    async fn approve(&self, message: String) -> Result<(), String> {
+    async fn approve(&self, flash: bool, message: String) -> Result<Approval, String> {
         self.scope.check()?;
         #[cfg(feature = "desktop")]
         if let Some(app) = self.host.app() {
-            return self.approve_desktop(app, message).await;
+            let permit = self.dialogs.prioritize_mcp(app).await?;
+            self.scope.check()?;
+            if self.scope.allows_without_prompt(flash)? {
+                return Ok(Approval::Unattended {
+                    flash,
+                    _desktop: Some(permit),
+                });
+            }
+            self.approve_desktop(app, message, permit).await?;
+            return Ok(Approval::Interactive);
         }
-        #[cfg(not(feature = "desktop"))]
         let _ = message;
-        Err("此操作需要在桌面版批准，CLI 的 MCP 不支持。".into())
+        if self.scope.allows_without_prompt(flash)? {
+            Ok(Approval::Unattended {
+                flash,
+                #[cfg(feature = "desktop")]
+                _desktop: None,
+            })
+        } else {
+            Err("此操作需要在桌面版批准，CLI 的 MCP 不支持。".into())
+        }
     }
 
     #[cfg(feature = "desktop")]
-    async fn approve_desktop(&self, app: &tauri::AppHandle, message: String) -> Result<(), String> {
-        let permit = self
-            .prompt
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "已有 MCP 请求等待确认，请先处理桌面上的对话框。")?;
+    async fn approve_desktop(
+        &self,
+        app: &tauri::AppHandle,
+        message: String,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<(), String> {
         let window = app
             .get_webview_window("main")
             .ok_or("请先打开 RKDevTool Next 主窗口。")?;

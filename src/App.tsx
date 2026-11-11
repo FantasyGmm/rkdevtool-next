@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -58,6 +59,8 @@ import type {
   DeviceInfo,
   DeviceQuery,
   FirmwareInfo,
+  McpSettingsDraft,
+  McpStatus,
   OperationEvent,
   OperationKind,
   OperationRequest,
@@ -150,15 +153,18 @@ function Modal({
   subtitle,
   children,
   close,
+  closeDisabled = false,
   footer,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
   close: () => void;
+  closeDisabled?: boolean;
   footer?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
     const dialog = ref.current;
     dialog?.showModal();
@@ -168,6 +174,7 @@ function Modal({
     <dialog
       ref={ref}
       className="modal"
+      aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
         close();
@@ -178,16 +185,132 @@ function Modal({
     >
       <div className="modal-head">
         <div>
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
         </div>
-        <button className="icon-button" onClick={close} aria-label="关闭">
+        <button className="icon-button" disabled={closeDisabled} onClick={close} aria-label="关闭">
           <X size={19} />
         </button>
       </div>
       <div className="modal-body">{children}</div>
       {footer && <div className="modal-footer">{footer}</div>}
     </dialog>
+  );
+}
+
+function PreferencesDialog({ savedTheme, saveTheme, close }: {
+  savedTheme: Preferences["theme"];
+  saveTheme: (theme: Preferences["theme"]) => void;
+  close: () => void;
+}) {
+  const [theme, setTheme] = useState(savedTheme);
+  const [status, setStatus] = useState<McpStatus | null>(null);
+  const [draft, setDraft] = useState<McpSettingsDraft | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmUnattended, setConfirmUnattended] = useState(false);
+
+  useEffect(() => {
+    if (!native) return;
+    let mounted = true;
+    void api.mcpStatus().then((next) => {
+      if (!mounted) return;
+      setStatus(next);
+      setDraft({ enabled: next.enabled, flashApproval: next.flashApproval, resetToken: false });
+    }, (error) => {
+      if (mounted) setLoadError(errorText(error));
+    });
+    return () => { mounted = false; };
+  }, [attempt]);
+
+  const mcpChanged = !!(status && draft && (
+    draft.enabled !== status.enabled || draft.flashApproval !== status.flashApproval ||
+    draft.resetToken || (draft.enabled && !status.running)
+  ));
+  const dirty = theme !== savedTheme || mcpChanged;
+  const save = async () => {
+    setConfirmUnattended(false);
+    setSaveError(null);
+    setSaving(true);
+    try {
+      if (mcpChanged && draft) await api.saveMcpSettings(draft);
+      if (theme !== savedTheme) saveTheme(theme);
+      close();
+    } catch (error) {
+      setSaveError(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const requestSave = () => {
+    if (mcpChanged && status && draft?.flashApproval === "unattended" && (
+      status.flashApproval !== "unattended" || (draft.enabled && !status.running)
+    )) {
+      setConfirmUnattended(true);
+    } else {
+      void save();
+    }
+  };
+
+  return (
+    <>
+      <Modal
+        title="偏好设置"
+        close={() => { if (!saving) close(); }}
+        closeDisabled={saving}
+        footer={
+          <button className="button primary" disabled={!dirty || saving} onClick={requestSave}>
+            {saving ? "保存中…" : "保存"} <Check size={15} />
+          </button>
+        }
+      >
+        <div className="settings-group">
+          <h3>外观</h3>
+          <div className="theme-options">
+            {([
+              ["light", Sun, "浅色"],
+              ["dark", Moon, "深色"],
+              ["system", Monitor, "跟随系统"],
+            ] as const).map(([value, Icon, label]) => (
+              <button className={theme === value ? "selected" : ""} key={value}
+                disabled={saving} aria-pressed={theme === value} onClick={() => setTheme(value)}>
+                <Icon size={19} /> {label}
+                {theme === value && <Check size={13} />}
+              </button>
+            ))}
+          </div>
+        </div>
+        <McpSettings status={status} draft={draft} saving={saving} loadError={loadError}
+          change={setDraft} reload={() => { setLoadError(null); setAttempt((value) => value + 1); }} />
+        {saveError && <p className="field-error" role="alert">{saveError}</p>}
+        <div className="about-box">
+          <img src="/icon.png" alt="" />
+          <div>
+            <strong>{appName} <span>{appVersion}</span></strong>
+            <p>Tauri 2 · Native RockUSB</p>
+            <small>GPL-3.0</small>
+          </div>
+        </div>
+      </Modal>
+      {confirmUnattended && (
+        <Modal title="保存全权限无人值守？"
+          close={() => setConfirmUnattended(false)}
+          footer={
+            <>
+              <button className="button secondary" autoFocus onClick={() => setConfirmUnattended(false)}>取消</button>
+              <button className="button secondary danger-text" onClick={() => void save()}>确认并保存</button>
+            </>
+          }
+        >
+          <div className="confirm-warning">
+            <TriangleAlert size={17} />
+            <p>MCP 服务开启时，持有本机 MCP 密钥的客户端可不经确认地擦除或烧录设备。误操作可能永久丢失数据或使设备无法启动。请先备份，只向可信客户端提供配置。</p>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -2206,53 +2329,11 @@ export default function App() {
         </Modal>
       )}
       {settingsOpen && (
-        <Modal
-          title="偏好设置"
+        <PreferencesDialog
+          savedTheme={prefs.theme}
+          saveTheme={(theme) => setPrefs((p) => ({ ...p, theme }))}
           close={() => setSettingsOpen(false)}
-          footer={
-            <button
-              className="button primary"
-              onClick={() => setSettingsOpen(false)}
-            >
-              完成
-              <Check size={15} />
-            </button>
-          }
-        >
-          <div className="settings-group">
-            <h3>外观</h3>
-            <div className="theme-options">
-              {(
-                [
-                  ["light", Sun, "浅色"],
-                  ["dark", Moon, "深色"],
-                  ["system", Monitor, "跟随系统"],
-                ] as const
-              ).map(([value, Icon, label]) => (
-                <button
-                  className={prefs.theme === value ? "selected" : ""}
-                  key={value}
-                  onClick={() => setPrefs((p) => ({ ...p, theme: value }))}
-                >
-                  <Icon size={19} />
-                  {label}
-                  {prefs.theme === value && <Check size={13} />}
-                </button>
-              ))}
-            </div>
-          </div>
-          <McpSettings />
-          <div className="about-box">
-            <img src="/icon.png" alt="" />
-            <div>
-              <strong>
-                {appName} <span>{appVersion}</span>
-              </strong>
-              <p>Tauri 2 · Native RockUSB</p>
-              <small>GPL-3.0</small>
-            </div>
-          </div>
-        </Modal>
+        />
       )}
 
     </div>

@@ -1,6 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   DeviceInfo,
   DeviceQuery,
@@ -8,7 +7,7 @@ import type {
   ArchiveInfo,
   FirmwareInfo,
   HistoryEntry,
-  McpFlashApproval,
+  McpSettingsDraft,
   McpStatus,
   McpStorageState,
   OperationEvent,
@@ -20,6 +19,12 @@ import type {
 export const native = isTauri();
 const preview = new URLSearchParams(location.search);
 export const demo = !native && preview.get("demo") === "1";
+
+type FileDialog =
+  | { kind: "open" | "loader" | "directory" }
+  | { kind: "save"; name: string; log: boolean };
+const choosePath = (request: FileDialog) => invoke<string | null>("choose_path", { request });
+
 export const exampleFirmware: FirmwareInfo = {
   path: "/demo/OrangePi_5_RK3588S_Android12.img",
   name: "OrangePi_5_RK3588S_Android12.img",
@@ -145,8 +150,7 @@ export const api = {
   },
   async chooseDirectory(): Promise<string | null> {
     if (!native) return demo ? "/demo/unpacked" : null;
-    const path = await open({ directory: true, multiple: false });
-    return typeof path === "string" ? path : null;
+    return choosePath({ kind: "directory" });
   },
   async startUnpack(path: string, outputDir: string): Promise<string> {
     if (!native) throw new Error("固件解包需要桌面应用");
@@ -215,11 +219,8 @@ export const api = {
         };
   },
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
-  setMcpEnabled: (enabled: boolean) =>
-    invoke<McpStatus>("set_mcp_enabled", { enabled }),
-  setMcpFlashApproval: (flashApproval: McpFlashApproval) =>
-    invoke<McpStatus>("set_mcp_flash_approval", { flashApproval }),
-  resetMcpToken: () => invoke<McpStatus>("reset_mcp_token"),
+  saveMcpSettings: (draft: McpSettingsDraft) =>
+    invoke<McpStatus>("save_mcp_settings", { ...draft }),
   subscribeMcpJob: (fn: (event: OperationEvent) => void) =>
     listen<OperationEvent>("mcp-operation-event", (event) => fn(event.payload)),
   subscribeMcpStorage: (fn: (state: McpStorageState) => void) =>
@@ -234,25 +235,21 @@ export const api = {
   },
   async chooseFile(loader = false): Promise<string | null> {
     if (!native) return null;
-    const path = await open({
-      multiple: false,
-      directory: false,
-      ...(loader ? { filters: [{ name: "Loader", extensions: ["bin"] }] } : {}),
-    });
-    return typeof path === "string" ? path : null;
+    return choosePath({ kind: loader ? "loader" : "open" });
   },
   async chooseSave(defaultPath: string): Promise<string | null> {
     return native
-      ? save({ defaultPath })
+      ? choosePath({ kind: "save", name: defaultPath, log: false })
       : demo
         ? `/demo/${defaultPath}`
         : null;
   },
   async exportLogs(contents: string) {
     if (native) {
-      const path = await save({
-        defaultPath: `rkdevtool-next-${new Date().toISOString().slice(0, 10)}.log`,
-        filters: [{ name: "日志", extensions: ["log"] }],
+      const path = await choosePath({
+        kind: "save",
+        name: `rkdevtool-next-${new Date().toISOString().slice(0, 10)}.log`,
+        log: true,
       });
       if (path) await invoke("export_logs", { path, contents });
     } else {

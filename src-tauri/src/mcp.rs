@@ -1,5 +1,7 @@
 mod tools;
 
+#[cfg(feature = "desktop")]
+use crate::dialogs::DesktopDialogs;
 use crate::{host::Host, state::Backend};
 use axum::{
     Router,
@@ -24,9 +26,9 @@ use std::{
 use subtle::ConstantTimeEq;
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, State};
+use tokio::net::TcpListener;
 #[cfg(feature = "desktop")]
 use tokio::sync::Mutex;
-use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const PORT: u16 = 38471;
@@ -43,6 +45,13 @@ pub(crate) enum FlashApproval {
     #[default]
     Required,
     Automatic,
+    Unattended,
+}
+
+impl FlashApproval {
+    fn permits_unattended(self, flash: bool) -> bool {
+        self == Self::Unattended || (flash && self == Self::Automatic)
+    }
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -70,7 +79,7 @@ pub(crate) struct Status {
 pub(crate) struct Controller {
     path: PathBuf,
     config_path: PathBuf,
-    prompt: Arc<Semaphore>,
+    pub(crate) dialogs: Arc<DesktopDialogs>,
     inner: Mutex<Inner>,
 }
 
@@ -109,7 +118,7 @@ impl Inner {
 impl Controller {
     pub async fn restore(path: PathBuf, app: AppHandle, backend: Arc<Backend>) -> Self {
         let config_path = path.with_file_name(CLIENT_CONFIG_NAME);
-        let prompt = Arc::new(Semaphore::new(1));
+        let dialogs = Arc::new(DesktopDialogs::default());
         let (settings, mut error) = match read_settings(&path) {
             Ok(settings) => (settings, None),
             Err(error) => (Settings::default(), Some(error)),
@@ -128,7 +137,7 @@ impl Controller {
                     token,
                     Host::desktop(app),
                     backend,
-                    prompt.clone(),
+                    dialogs.clone(),
                     settings.flash_approval,
                 )),
                 Err(reason) => {
@@ -142,7 +151,7 @@ impl Controller {
         Self {
             path,
             config_path,
-            prompt,
+            dialogs,
             inner: Mutex::new(Inner {
                 settings,
                 server,
@@ -164,104 +173,75 @@ pub(crate) async fn mcp_status(controller: State<'_, Controller>) -> Result<Stat
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-pub(crate) async fn set_mcp_flash_approval(
-    flash_approval: FlashApproval,
-    controller: State<'_, Controller>,
-) -> Result<Status, String> {
-    let mut inner = controller.inner.lock().await;
-    if flash_approval != inner.settings.flash_approval {
-        let settings = Settings {
-            flash_approval,
-            ..inner.settings.clone()
-        };
-        {
-            // Change the persisted setting and admission policy together.
-            let live_policy = inner
-                .server
-                .as_ref()
-                .map(|server| server.scope.lock_policy())
-                .transpose()?;
-            write_managed_json(&controller.path, &settings)
-                .map_err(|e| format!("无法保存 MCP 烧录授权：{e}"))?;
-            if let Some(mut policy) = live_policy {
-                *policy = flash_approval;
-            }
-        }
-        inner.settings = settings;
-    }
-    Ok(inner.status(&controller.config_path))
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-pub(crate) async fn set_mcp_enabled(
+pub(crate) async fn save_mcp_settings(
     enabled: bool,
+    flash_approval: FlashApproval,
+    reset_token: bool,
     controller: State<'_, Controller>,
     app: AppHandle,
     backend: State<'_, Arc<Backend>>,
 ) -> Result<Status, String> {
     let mut inner = controller.inner.lock().await;
-    if enabled && !inner.running() {
-        let listener = bind().await?;
-        let token = inner.settings.token.clone().unwrap_or_else(new_token);
-        let settings = Settings {
-            enabled: true,
-            token: Some(token.clone()),
-            flash_approval: inner.settings.flash_approval,
-        };
-        write_client_config(&controller.config_path, &token)?;
-        write_managed_json(&controller.path, &settings)
-            .map_err(|e| format!("无法保存 MCP 设置：{e}"))?;
-        if let Some(old) = inner.server.take() {
-            old.stop().await;
-        }
-        inner.server = Some(Running::start(
-            listener,
-            &token,
-            Host::desktop(app),
-            backend.inner().clone(),
-            controller.prompt.clone(),
-            settings.flash_approval,
-        ));
-        inner.settings = settings;
-    } else if !enabled && inner.settings.enabled {
-        let settings = Settings {
-            enabled: false,
-            ..inner.settings.clone()
-        };
-        write_managed_json(&controller.path, &settings)
-            .map_err(|e| format!("无法保存 MCP 设置：{e}"))?;
-        if let Some(server) = inner.server.take() {
-            server.stop().await;
-        }
-        inner.settings = settings;
-    } else {
+    if reset_token && (inner.settings.enabled || enabled) {
+        return Err("请先保存关闭 MCP 服务的设置，再重置密钥。".into());
+    }
+    let starting = enabled && !inner.running();
+    if !starting
+        && !reset_token
+        && enabled == inner.settings.enabled
+        && flash_approval == inner.settings.flash_approval
+    {
         return Ok(inner.status(&controller.config_path));
     }
-    inner.error = None;
-    Ok(inner.status(&controller.config_path))
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-pub(crate) async fn reset_mcp_token(controller: State<'_, Controller>) -> Result<Status, String> {
-    let mut inner = controller.inner.lock().await;
-    if inner.settings.enabled {
-        return Err("请先关闭 MCP 服务，再重置密钥。".into());
-    }
-    let token = new_token();
-    let settings = Settings {
-        enabled: false,
-        token: Some(token.clone()),
-        flash_approval: inner.settings.flash_approval,
+    // A failed bind or config write must not change the saved approval policy.
+    let listener = if starting { Some(bind().await?) } else { None };
+    let token = if reset_token || (starting && inner.settings.token.is_none()) {
+        Some(new_token())
+    } else {
+        inner.settings.token.clone()
     };
-    // Persist the new key first: after a successful reset, a stale client can
-    // never reconnect. Starting the server also regenerates the client config.
-    write_managed_json(&controller.path, &settings)
-        .map_err(|e| format!("无法重置 MCP 密钥：{e}"))?;
+    let settings = Settings {
+        enabled,
+        token,
+        flash_approval,
+    };
+    if starting || reset_token {
+        write_client_config(
+            &controller.config_path,
+            settings.token.as_deref().expect("configured token"),
+        )?;
+    }
+    {
+        // Persist service state and policy together, then apply them before
+        // another MCP mutation can be admitted.
+        let live = inner.server.as_ref().filter(|_| inner.running());
+        let mut policy = live.map(|server| server.scope.lock_policy()).transpose()?;
+        write_managed_json(&controller.path, &settings)
+            .map_err(|e| format!("无法保存 MCP 设置：{e}"))?;
+        if let Some(policy) = policy.as_mut() {
+            **policy = flash_approval;
+        }
+        if !enabled && let Some(server) = live {
+            server.scope.stopped.cancel();
+        }
+    }
+    if (!enabled || starting)
+        && let Some(old) = inner.server.take()
+    {
+        old.stop().await;
+    }
+    if let Some(listener) = listener {
+        inner.server = Some(Running::start(
+            listener,
+            settings.token.as_deref().expect("configured token"),
+            Host::desktop(app),
+            backend.inner().clone(),
+            controller.dialogs.clone(),
+            settings.flash_approval,
+        ));
+    }
     inner.settings = settings;
     inner.error = None;
-    write_client_config(&controller.config_path, &token)?;
     Ok(inner.status(&controller.config_path))
 }
 
@@ -294,6 +274,16 @@ struct Scope {
     flash_approval: Arc<CommitLock<FlashApproval>>,
 }
 
+enum Approval {
+    #[cfg(feature = "desktop")]
+    Interactive,
+    Unattended {
+        flash: bool,
+        #[cfg(feature = "desktop")]
+        _desktop: Option<tokio::sync::OwnedSemaphorePermit>,
+    },
+}
+
 impl Scope {
     fn check(&self) -> Result<(), String> {
         if self.stopped.is_cancelled() {
@@ -309,25 +299,22 @@ impl Scope {
             .map_err(|_| "MCP 状态异常，请重启应用。".into())
     }
 
-    fn allows_automatic_flash(&self) -> Result<bool, String> {
-        Ok(*self.lock_policy()? == FlashApproval::Automatic)
+    fn allows_without_prompt(&self, flash: bool) -> Result<bool, String> {
+        Ok(self.lock_policy()?.permits_unattended(flash))
     }
 
-    fn commit<T>(&self, run: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        self.commit_operation(false, run)
-    }
-
-    // Stopping the service or revoking automatic flash takes effect before
+    // Stopping the service or reducing unattended access takes effect before
     // any subsequent admission; a job already launched is left running.
-    fn commit_operation<T>(
+    fn commit<T>(
         &self,
-        automatic_flash: bool,
+        approval: Approval,
         run: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
         let policy = self.lock_policy()?;
         self.check()?;
-        if automatic_flash && *policy != FlashApproval::Automatic {
-            return Err("自动烧录已关闭，未启动任务。请重新提交并在桌面批准。".into());
+        if matches!(&approval, Approval::Unattended { flash, .. } if !policy.permits_unattended(*flash))
+        {
+            return Err("当前 MCP 授权模式已不允许此操作免审批；请重新提交。".into());
         }
         run()
     }
@@ -358,14 +345,20 @@ impl Running {
         token: &str,
         host: Host,
         backend: Arc<Backend>,
-        prompt: Arc<Semaphore>,
+        #[cfg(feature = "desktop")] dialogs: Arc<DesktopDialogs>,
         flash_approval: FlashApproval,
     ) -> Self {
         let scope = Scope {
             stopped: CancellationToken::new(),
             flash_approval: Arc::new(CommitLock::new(flash_approval)),
         };
-        let handler = tools::Tools::new(host, backend, prompt, scope.clone());
+        let handler = tools::Tools::new(
+            host,
+            backend,
+            scope.clone(),
+            #[cfg(feature = "desktop")]
+            dialogs,
+        );
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
             .with_json_response(true)
@@ -446,7 +439,8 @@ pub(crate) async fn serve_headless(directory: PathBuf, allow_flash: bool) -> Res
         &token,
         Host::default(),
         backend.clone(),
-        Arc::new(Semaphore::new(1)),
+        #[cfg(feature = "desktop")]
+        Arc::new(DesktopDialogs::default()),
         if allow_flash {
             FlashApproval::Automatic
         } else {

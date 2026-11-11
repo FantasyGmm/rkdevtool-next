@@ -1297,6 +1297,23 @@ tr:last-child td {
 .mcp-settings p[role="alert"] {
   color: var(--ink);
 }
+.mcp-approval {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+.mcp-approval select {
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.mcp-approval-warning strong {
+  color: var(--ink);
+}
 .mcp-connection {
   display: flex;
   flex-wrap: wrap;

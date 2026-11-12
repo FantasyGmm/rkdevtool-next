@@ -27,16 +27,20 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             bundles: app,dmg
-            bundle-dir: dmg
-            extension: dmg
-            asset-suffix: macos-arm64.dmg
+            packages: dmg dmg macos-arm64.dmg
           - platform: windows-x64
             runner: windows-2022
             target: x86_64-pc-windows-msvc
             bundles: nsis
-            bundle-dir: nsis
-            extension: exe
-            asset-suffix: windows-x64-setup.exe
+            packages: nsis exe windows-x64-setup.exe
+          - platform: linux-x64
+            # Keep the glibc baseline below Deepin 25's, including for AppImage.
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+            packages: |
+              deb deb linux-x64.deb
+              appimage AppImage linux-x64.AppImage
     defaults:
       run:
         shell: bash
@@ -49,6 +53,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libfuse2 xdg-utils
       - name: Check application and release versions
         run: npm run check:version
       - name: Install frontend dependencies
@@ -67,19 +78,24 @@ jobs:
         run: |
           codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevTool Next.app"
           hdiutil verify src-tauri/target/"$BUILD_TARGET"/release/bundle/dmg/*.dmg
-      - name: Collect installer
+      - name: Collect installers
         env:
           BUILD_TARGET: ${{ matrix.target }}
-          BUNDLE_DIR: ${{ matrix.bundle-dir }}
-          PACKAGE_EXT: ${{ matrix.extension }}
-          ASSET_SUFFIX: ${{ matrix.asset-suffix }}
+          PACKAGES: ${{ matrix.packages }}
         run: |
           version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          bundle_root="src-tauri/target/$BUILD_TARGET/release/bundle"
           shopt -s nullglob
-          files=("src-tauri/target/$BUILD_TARGET/release/bundle/$BUNDLE_DIR/"*."$PACKAGE_EXT")
-          [[ ${#files[@]} -eq 1 ]] || { echo 'Expected exactly one installer' >&2; exit 1; }
           mkdir -p release
-          cp "${files[0]}" "release/RKDevTool-Next_${version}_${ASSET_SUFFIX}"
+          while read -r bundle_dir extension suffix; do
+            [[ -n "$bundle_dir" ]] || continue
+            files=("$bundle_root/$bundle_dir/"*."$extension")
+            if [[ ${#files[@]} -ne 1 || ! -s "${files[0]}" ]]; then
+              echo "Expected exactly one nonempty .$extension installer in $bundle_root/$bundle_dir" >&2
+              exit 1
+            fi
+            cp "${files[0]}" "release/RKDevTool-Next_${version}_${suffix}"
+          done <<< "$PACKAGES"
       - uses: actions/upload-artifact@v7
         with:
           name: RKDevTool-Next-${{ matrix.platform }}
@@ -187,6 +203,8 @@ jobs:
           assets=(
             "release/RKDevTool-Next_${version}_macos-arm64.dmg"
             "release/RKDevTool-Next_${version}_windows-x64-setup.exe"
+            "release/RKDevTool-Next_${version}_linux-x64.deb"
+            "release/RKDevTool-Next_${version}_linux-x64.AppImage"
             "release/RKDevTool-Next-CLI_${version}_macos-arm64.tar.gz"
             "release/RKDevTool-Next-CLI_${version}_windows-x64.zip"
             "release/RKDevTool-Next-CLI_${version}_linux-x64.tar.gz"
@@ -198,6 +216,7 @@ jobs:
           ## 下载 / Downloads
           - **macos-arm64.dmg**：Apple Silicon（M 系列）Mac
           - **windows-x64-setup.exe**：Windows x64 安装程序
+          - **linux-x64.deb / linux-x64.AppImage**：Linux x86_64 桌面版；Debian 系可选 `.deb`，免安装可选 `.AppImage`。USB 访问需配置本机 udev 权限。
           - **RKDevTool-Next-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。无需 GUI，可运行本机 MCP；烧录需显式启用 `--allow-flash`。
 
           macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包尚未配置代码签名，系统可能显示安全提示。Windows USB 通信需要目标 Rockusb 接口使用 WinUSB。

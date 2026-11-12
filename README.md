@@ -37,6 +37,7 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 | --- | --- | --- |
 | macOS Apple Silicon（M 系列，macOS 11+） | `RKDevTool-Next_*_macos-arm64.dmg` | 打开 DMG，将 RKDevTool Next 拖入「应用程序」 |
 | Windows x64（Windows 10 / 11） | `RKDevTool-Next_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
+| Linux x86_64（v0.1.9 之后的新版本） | `RKDevTool-Next_*_linux-x64.deb` / `.AppImage` | Debian 系用 `sudo apt install ./<文件名>.deb`；AppImage 添加执行权限后直接运行 |
 
 macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签名或公证；Windows 安装包未配置代码签名。系统可能显示安全提示，请确认安装包来自本仓库的 Release。
 
@@ -49,6 +50,8 @@ xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
 这条命令只移除该 App 的下载隔离标记，不关闭系统的门禁。运行后重新打开 App。
 
 **Windows USB 驱动：** 原生后端需要目标 **Rockusb 接口使用 WinUSB**。Rockchip 专有驱动不等同于 WinUSB。修改驱动前记录原驱动，并只选择开发板对应的 USB 接口，避免改动其他设备。
+
+**Linux USB 权限：** 如果普通用户能启动应用但无法访问开发板，请用发行版的 udev 规则授权目标 Rockusb 设备。安装包不会自动修改 USB 权限，不建议用 root 运行应用。
 
 ## 开始烧录
 
@@ -163,7 +166,7 @@ cargo run --locked --manifest-path src-tauri/Cargo.toml --no-default-features \
 
 - macOS：Xcode Command Line Tools。
 - Windows：Visual Studio C++ Build Tools、Windows SDK、WebView2。
-- Linux：WebKitGTK 4.1 等原生依赖；当前 Release 不提供 Linux 安装包。
+- Linux：WebKitGTK 4.1 等原生依赖。
 
 ```bash
 git clone https://github.com/FantasyGmm/rkdevtool-next.git
@@ -179,7 +182,7 @@ npm run check:version
 npm run tauri -- build --ci -- --locked
 ```
 
-产物位于 `src-tauri/target/release/bundle/`。显式指定 `--target` 时，位于对应 target 子目录。macOS 默认生成 `.app` / `.dmg`，Windows 生成 NSIS `.exe`。
+产物位于 `src-tauri/target/release/bundle/`。显式指定 `--target` 时，位于对应 target 子目录。macOS 默认生成 `.app` / `.dmg`，Windows 生成 NSIS `.exe`，Linux 生成 `.deb` / `.AppImage`。
 
 仅预览界面可运行 `npm run dev`，打开 `http://localhost:1420/`。加上 `?demo=1` 可进入标注为演示的交互模式，不访问 USB；真实烧录请使用桌面应用。
 
@@ -189,8 +192,8 @@ Linux 源码构建需安装 WebKitGTK 4.1、OpenSSL、AppIndicator、librsvg、p
 
 [GitHub Actions 工作流](.github/workflows/desktop-build.yml) 使用 GitHub-hosted runner：
 
-- 推送 `main`、提交 Pull Request，或手动运行：构建 **macOS arm64 / Windows x64** 桌面安装包，以及 **macOS arm64 / Windows x64 / Linux x64** CLI 压缩包，保存为 Actions artifacts。
-- 推送 `v*` 标签：校验标签与源码版本一致；全部构建成功后，将五个产物一起发布到 GitHub Release。
+- 推送 `main`、提交 Pull Request，或手动运行：构建 **macOS arm64 / Windows x64 / Linux x86_64** 桌面安装包和 CLI 压缩包，保存为 Actions artifacts。登录 GitHub 后，可从对应运行的 **Artifacts** 下载 Linux `.deb` 和 `.AppImage` 试用包。
+- 推送 `v*` 标签：校验标签与源码版本一致；全部构建成功后，将七个产物一起发布到 GitHub Release。
 - 任一平台失败：不发布新的 Release。上传失败时保留草稿，可修复流水线后重跑；已发布的版本不覆盖，后续修改使用新版本号。
 
 发布新版本时，同步修改以下版本号并提交：

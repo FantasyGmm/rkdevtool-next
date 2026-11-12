@@ -27,6 +27,8 @@ pub enum JobOrigin {
     #[cfg(feature = "desktop")]
     Desktop,
     Mcp,
+    #[cfg(feature = "headless-cli")]
+    Cli,
 }
 
 pub struct ActiveJob {
@@ -195,6 +197,8 @@ impl Backend {
             #[cfg(feature = "desktop")]
             JobOrigin::Desktop => "operation-event",
             JobOrigin::Mcp => "mcp-operation-event",
+            #[cfg(feature = "headless-cli")]
+            JobOrigin::Cli => return,
         };
         app.emit(channel, event);
     }

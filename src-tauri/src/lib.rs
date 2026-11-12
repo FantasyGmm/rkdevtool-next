@@ -38,17 +38,19 @@ async fn scan(backend: &Backend) -> Result<Vec<DeviceInfo>, String> {
         .clone()
         .try_lock_owned()
         .map_err(|_| "设备任务运行中，扫描已暂停")?;
-    let targets = usb::targets().await?;
+    let mut targets = usb::targets().await?;
     let connected_ids: Vec<_> = targets
         .iter()
         .map(|target| target.info.id.as_str())
         .collect();
     let rebooting_ids = backend.rebooting_device_ids(&connected_ids).await;
+    targets.retain(|target| !rebooting_ids.contains(&target.info.id));
+    probe_targets(targets).await
+}
+
+async fn probe_targets(targets: Vec<usb::Target>) -> Result<Vec<DeviceInfo>, String> {
     let mut devices = Vec::new();
     for mut target in targets {
-        if rebooting_ids.contains(&target.info.id) {
-            continue;
-        }
         if target.info.mode == "loader" {
             let detected = format!(
                 "已检测到 Loader 候选设备（{}），但读取失败",

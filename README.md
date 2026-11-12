@@ -70,6 +70,31 @@ xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
 - **操作反馈**：串行任务、实时进度、日志筛选与导出；向上翻阅日志时暂停自动跟随，回到底部后继续跟随。
 - **界面**：浅色 / 深色 / 跟随系统外观，固定导航，独立滚动的分区列表和日志区域。
 
+## 直接使用 CLI
+
+从 Release 下载并解压 `RKDevTool-Next-CLI`，在解压目录运行。无需启动桌面或 MCP：
+
+```bash
+./rkdevtool-next-cli scan
+./rkdevtool-next-cli inspect update.img
+./rkdevtool-next-cli unpack update.img ./output
+```
+
+`scan` 将设备列表输出为 JSON。`inspect` 不访问 USB，将 RKFW/RKAF、RAW、MiniLoader 或 ZIP/gzip/xz/bzip2 中可用的镜像信息输出为 JSON。`unpack` 只解包 RKFW/RKAF：在已存在的 `./output` 下新建子目录，不覆盖文件，并输出新目录路径。
+
+烧录前，退出桌面应用和其他烧录工具，从 `scan` 输出取目标设备的 `id`。核对设备与固件并备份后，显式加 `--allow-flash`：
+
+```bash
+device_id='从 scan 结果复制的 id'
+# RKFW/RKAF 整包：按包内布局写入
+./rkdevtool-next-cli flash update.img --device "$device_id" --allow-flash
+# RAW：明确指定起始 LBA（512 字节扇区）或 GPT 分区名
+./rkdevtool-next-cli flash disk.img --device "$device_id" --start-sector 0 --allow-flash
+./rkdevtool-next-cli flash boot.img --device "$device_id" --partition boot --allow-flash
+```
+
+RAW 和独立 RKAF 需要设备已进入 Loader；直接烧录压缩包前须先提取镜像。只有加 `--reboot` 才会在成功后重启。按 Ctrl+C 会请求在安全边界停止，已写入的数据不会回滚；请等命令退出再断开设备。
+
 ## 连接本机 MCP 客户端
 
 1. 在桌面应用的「偏好设置 → MCP 服务器」勾选启用，点击「保存」。首次运行默认关闭。

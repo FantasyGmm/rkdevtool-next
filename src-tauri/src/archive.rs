@@ -63,17 +63,22 @@ fn format(file: &mut File) -> Result<&'static str, String> {
     let mut b = [0; 8];
     let n = file.read(&mut b).map_err(err)?;
     file.seek(SeekFrom::Start(0)).map_err(err)?;
-    let b = &b[..n];
+    detect_format(&b[..n]).ok_or_else(|| {
+        "Unsupported archive format (native support: ZIP, gzip, xz, bzip2; 7z/zstd/tar are not supported)".into()
+    })
+}
+
+pub(crate) fn detect_format(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06") {
-        Ok("zip")
+        Some("zip")
     } else if b.starts_with(&[31, 139]) {
-        Ok("gzip")
+        Some("gzip")
     } else if b.starts_with(b"\xfd7zXZ\0") {
-        Ok("xz")
+        Some("xz")
     } else if b.starts_with(b"BZh") {
-        Ok("bzip2")
+        Some("bzip2")
     } else {
-        Err("Unsupported archive format (native support: ZIP, gzip, xz, bzip2; 7z/zstd/tar are not supported)".into())
+        None
     }
 }
 fn safe_name(name: &str) -> bool {

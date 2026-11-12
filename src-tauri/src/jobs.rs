@@ -326,10 +326,20 @@ pub async fn prepare(request: OperationRequest) -> Result<Prepared, String> {
 pub fn launch(
     app: Host,
     backend: Arc<Backend>,
-    mut prepared: Prepared,
+    prepared: Prepared,
     gate: OwnedMutexGuard<()>,
     origin: JobOrigin,
 ) -> Result<String, String> {
+    launch_task(app, backend, prepared, gate, origin).map(|(id, _)| id)
+}
+
+pub(crate) fn launch_task(
+    app: Host,
+    backend: Arc<Backend>,
+    mut prepared: Prepared,
+    gate: OwnedMutexGuard<()>,
+    origin: JobOrigin,
+) -> Result<(String, tokio::task::JoinHandle<Result<String, String>>), String> {
     let id = uuid::Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut entry = HistoryEntry {
@@ -356,7 +366,7 @@ pub fn launch(
     };
     backend.begin(&entry, cancel.clone(), origin)?;
     let job_id = id.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let start = Instant::now();
         let mut report = Reporter::new(app, backend.clone(), origin, job_id, cancel);
         report.phase("preflight", "正在检查目标设备与固件", 0, 0.0, 0.0);
@@ -421,8 +431,13 @@ pub fn launch(
         };
         drop(gate);
         report.terminal(status, &message, level);
+        if status == "completed" {
+            Ok(message)
+        } else {
+            Err(message)
+        }
     });
-    Ok(id)
+    Ok((id, task))
 }
 
 struct Reporter {
@@ -528,6 +543,13 @@ impl Reporter {
 }
 
 impl Prepared {
+    #[cfg(feature = "headless-cli")]
+    pub(crate) fn is_firmware_package(&self) -> bool {
+        self.image
+            .as_ref()
+            .is_some_and(|image| image.package.is_some())
+    }
+
     async fn run(&mut self, report: &mut Reporter) -> Result<(), String> {
         report.check()?;
         self.source_unchanged()?;

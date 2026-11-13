@@ -16,24 +16,25 @@ use std::{
 };
 
 const SECTOR: usize = 512;
+const ROCKUSB_SECTORS: u64 = u32::MAX as u64 + 1;
 const PARAM_LBA: u64 = 8192;
 const PARAM_SECTORS: u64 = 512;
 
 const HELP: &str = "rkdevtool-maintenance [--allow-device-write] COMMAND
 
-  ppt                        Read verified GPT or legacy parameter partitions
+  ppt                        List partitions from the primary GPT or legacy parameter
   rl LBA SECTORS OUT         Read an exact device range into a new file
   wl LBA IMAGE               Write RAW or Android sparse by address
-  wlx PARTITION IMAGE        Write RAW or Android sparse to a verified partition
+  wlx PARTITION IMAGE        Write RAW or Android sparse within a named partition
   ul LOADER                  Persist an unsigned MiniLoader on eMMC/SD
-  gpt PARAMETER_OR_GPT_IMG   Write GPT from parameters or an exact-capacity image
+  gpt PARAMETER_OR_GPT_IMG   Write GPT from parameters or a 67-sector image
   prm PARAMETER              Write a legacy PARM block on a non-GPT device
   pack TEMPLATE DIR OUT      Repack an unsigned MiniLoader from unpacked entries
   unpack LOADER NEW_DIR      Extract validated MiniLoader entries
   tagspl TAG SPL OUT         Prefix a tag into a new SPL file
 
 All device writes require --allow-device-write. Close the desktop application
-and connect exactly one device in Loader mode before using hardware commands.";
+and connect exactly one device in Loader or Maskrom mode.";
 
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     let mut args = arguments.into_iter().peekable();
@@ -76,8 +77,8 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
             output.sync_all().map_err(io_error)
         }
         (Some("ppt"), []) => device_task(async {
-            let (mut session, capacity) = open_device().await?;
-            let (kind, partitions) = partition_layout(&mut session, capacity).await?;
+            let mut session = open_session().await?;
+            let (kind, partitions) = partition_layout(&mut session, None).await?;
             println!("{kind}\tSTART_LBA\tSECTORS");
             for part in partitions {
                 println!("{}\t{}\t{}", part.name, part.start_sector, part.sectors);
@@ -87,8 +88,8 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
         (Some("rl"), [start, sectors, output]) => device_task(async {
             let start = number(start, "LBA")?;
             let sectors = number(sectors, "sector count")?;
-            let (mut session, capacity) = open_device().await?;
-            check_range(start, sectors, capacity)?;
+            check_address(start, sectors)?;
+            let mut session = open_session().await?;
             let mut out = new_file(Path::new(output))?;
             let mut data = vec![0; CHUNK_BYTES];
             let mut done = 0;
@@ -106,7 +107,6 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
             let start = number(start, "LBA")?;
             device_task(async {
                 let (mut session, capacity) = open_device().await?;
-                require_sd_emmc(&mut session).await?;
                 let available = capacity
                     .checked_sub(start)
                     .ok_or("Start LBA is outside the device")?;
@@ -118,12 +118,25 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
             let name = name.to_str().ok_or("Partition name must be UTF-8")?;
             device_task(async {
                 let (mut session, capacity) = open_device().await?;
-                require_sd_emmc(&mut session).await?;
-                let (_, parts) = partition_layout(&mut session, capacity).await?;
-                let target = parts
-                    .iter()
-                    .find(|part| part.name == name)
-                    .ok_or("Partition not found; use the exact name shown by ppt")?;
+                let (kind, parts) = partition_layout(&mut session, Some(capacity)).await?;
+                let mut matches = parts.iter().filter(|part| {
+                    if kind == "PARM" {
+                        part.name.eq_ignore_ascii_case(name)
+                    } else {
+                        part.name == name
+                    }
+                });
+                let target = matches
+                    .next()
+                    .ok_or("Partition not found; use the name shown by ppt")?;
+                if matches.next().is_some() {
+                    return Err(format!("Partition name is ambiguous: {name}"));
+                }
+                check_range(target.start_sector, target.sectors, capacity)?;
+                if kind == "GPT" && target.start_sector < gpt::DEVICE_PRIMARY_SECTORS {
+                    return Err("Selected partition overlaps the primary GPT sectors".into());
+                }
+                ensure_no_overlap(&parts, target.start_sector, target.sectors, Some(target))?;
                 write_image(
                     &mut session,
                     target.start_sector,
@@ -165,23 +178,23 @@ fn require_write(allowed: bool) -> Result<(), String> {
     }
 }
 
-async fn open_device() -> Result<(Session, u64), String> {
+async fn open_session() -> Result<Session, String> {
     let mut devices = usb::targets().await?;
     if devices.len() != 1 {
         return Err("Connect exactly one Rockchip device".into());
     }
-    let mut target = devices.pop().unwrap();
-    if target.info.mode != "loader" {
-        return Err("Put the device in Loader mode before maintenance".into());
+    let target = devices.pop().unwrap();
+    if !matches!(target.info.mode.as_str(), "loader" | "maskrom") {
+        return Err("Put the device in Loader or Maskrom mode before maintenance".into());
     }
-    let mut session = usb::probe_loader(&mut target).await?;
+    let session = Session::open(&target).await?;
+    eprintln!("{}", target.description());
+    Ok(session)
+}
+
+async fn open_device() -> Result<(Session, u64), String> {
+    let mut session = open_session().await?;
     let capacity = session.capacity().await?;
-    eprintln!(
-        "{} · {} · {} sectors",
-        target.description(),
-        target.info.chip,
-        capacity
-    );
     Ok((session, capacity))
 }
 
@@ -204,41 +217,35 @@ async fn primary_metadata(session: &mut Session) -> Result<[u8; 1024], String> {
     Ok(metadata)
 }
 
-async fn has_gpt(session: &mut Session, capacity: u64) -> Result<bool, String> {
+async fn has_gpt(session: &mut Session) -> Result<bool, String> {
     let primary = primary_metadata(session).await?;
-    if primary[512..520] == *b"EFI PART"
-        || primary[446..510]
-            .chunks_exact(16)
-            .any(|entry| entry[4] == 0xee)
-    {
-        return Ok(true);
-    }
-    let mut tail = [0; SECTOR];
-    session.read(capacity - 1, &mut tail).await?;
-    Ok(tail.starts_with(b"EFI PART"))
+    Ok(primary[512..520] == *b"EFI PART"
+        || (primary[510..512] == [0x55, 0xaa]
+            && primary[446..510]
+                .chunks_exact(16)
+                .any(|entry| entry[4] == 0xee)))
 }
 
-async fn legacy_block(session: &mut Session, capacity: u64) -> Result<Vec<u8>, String> {
-    check_range(PARAM_LBA, PARAM_SECTORS, capacity)?;
+async fn legacy_block(session: &mut Session) -> Result<Vec<u8>, String> {
     let mut bytes = vec![0; PARAM_SECTORS as usize * SECTOR];
-    for (i, chunk) in bytes.chunks_mut(CHUNK_BYTES).enumerate() {
-        session
-            .read(PARAM_LBA + (i * CHUNK_BYTES / SECTOR) as u64, chunk)
-            .await?;
-    }
+    session.read(PARAM_LBA, &mut bytes).await?;
     Ok(bytes)
 }
 
 async fn partition_layout(
     session: &mut Session,
-    capacity: u64,
+    capacity: Option<u64>,
 ) -> Result<(&'static str, Vec<PartitionInfo>), String> {
-    if has_gpt(session, capacity).await? {
-        // A broken GPT is not evidence of a legacy layout.
-        return Ok(("GPT", usb::partitions(session, capacity).await?));
+    if let Some(partitions) = usb::primary_partitions(session).await? {
+        return Ok(("GPT", partitions));
     }
-    let legacy = firmware::decode_legacy_sectors(&legacy_block(session, capacity).await?)?;
-    Ok(("PARM", firmware::legacy_partitions(&legacy, capacity)?))
+    let legacy = firmware::LegacyLayout::from_device(&legacy_block(session).await?)?;
+    let capacity = if capacity.is_none() && legacy.has_grow() {
+        Some(session.capacity().await?)
+    } else {
+        capacity
+    };
+    Ok(("PARM", legacy.partitions(capacity)?))
 }
 
 async fn write_image(
@@ -281,7 +288,7 @@ async fn write_image(
         file.read_exact(&mut data[..len]).map_err(|error| {
             format!("Read image: {error}; previous chunks may already be written")
         })?;
-        write_verified(session, start + done / SECTOR as u64, data).await?;
+        write_lba(session, start + done / SECTOR as u64, data).await?;
         done += len as u64;
     }
     Ok(())
@@ -295,48 +302,15 @@ async fn write_gpt(path: &Path) -> Result<(), String> {
     let mut bytes = Vec::new();
     file.take(size).read_to_end(&mut bytes).map_err(io_error)?;
     let (mut session, capacity) = open_device().await?;
-    require_sd_emmc(&mut session).await?;
-    let disk = if bytes.len() == 67 * SECTOR && bytes[SECTOR..SECTOR + 8] == *b"EFI PART" {
-        let (primary, backup) = bytes.split_at(34 * SECTOR);
-        let primary_header = &primary[SECTOR..2 * SECTOR];
-        let backup_header = &backup[32 * SECTOR..];
-        let plan = gpt::read_plan(primary_header, capacity)?;
-        let (backup_lba, table_size) =
-            gpt::backup_table_spec(primary_header, backup_header, capacity)?;
-        if plan.backup_is_not_at_device_end
-            || plan.table_lba != 2
-            || backup_lba != capacity - 33
-            || table_size > 32 * SECTOR
-            || primary[510..512] != [0x55, 0xaa]
-            || primary[450] != 0xee
-            || u32::from_le_bytes(primary[454..458].try_into().unwrap()) != 1
-            || u64::from(u32::from_le_bytes(primary[458..462].try_into().unwrap())) != capacity - 1
-            || primary[462..510].iter().any(|&byte| byte != 0)
-        {
-            return Err(
-                "GPT image is not in standard 67-sector layout for this exact device capacity"
-                    .into(),
-            );
-        }
-        let partitions = gpt::parse_verified(
-            primary_header,
-            &primary[2 * SECTOR..],
-            backup_header,
-            &backup[..32 * SECTOR],
-            capacity,
-        )?;
-        gpt::GptImage {
-            primary: primary.to_vec(),
-            backup: backup.to_vec(),
-            partitions,
-        }
+    let disk = if bytes.get(SECTOR..SECTOR + 8) == Some(&b"EFI PART"[..]) {
+        gpt::resize_image(&bytes, capacity)?
     } else {
         let parameter = std::str::from_utf8(&bytes)
             .map_err(|_| "Expected GPT parameter text or a valid GPT image")?;
         gpt::build(parameter, capacity)?
     };
-    write_verified(&mut session, capacity - 33, &disk.backup).await?;
-    write_verified(&mut session, 0, &disk.primary).await
+    write_lba(&mut session, 0, &disk.primary).await?;
+    write_lba(&mut session, capacity - 33, &disk.backup).await
 }
 
 async fn write_parameter(path: &Path) -> Result<(), String> {
@@ -349,51 +323,53 @@ async fn write_parameter(path: &Path) -> Result<(), String> {
     let block = firmware::encode_legacy_parameter(&text)?;
     let parameter = std::str::from_utf8(&text).map_err(|_| "Legacy parameter must be ASCII")?;
     let (mut session, capacity) = open_device().await?;
-    require_sd_emmc(&mut session).await?;
-    if has_gpt(&mut session, capacity).await? {
+    if has_gpt(&mut session).await? {
         return Err("prm cannot replace or coexist with a GPT disk layout".into());
     }
     let sector_count = (block.len() / SECTOR) as u64;
-    let previous = legacy_block(&mut session, capacity).await?;
-    let partitions = firmware::legacy_partitions(parameter, capacity)?;
-    ensure_no_overlap(&partitions, PARAM_LBA, sector_count)?;
+    check_range(PARAM_LBA, sector_count, capacity)?;
+    let partitions =
+        firmware::LegacyLayout::from_parameter(parameter)?.partitions(Some(capacity))?;
+    ensure_no_overlap(&partitions, PARAM_LBA, sector_count, None)?;
+    let previous = legacy_block(&mut session).await?;
     if previous.starts_with(b"PARM") {
-        let previous = firmware::decode_legacy_sectors(&previous)?;
-        ensure_no_overlap(
-            &firmware::legacy_partitions(&previous, capacity)?,
-            PARAM_LBA,
-            sector_count,
-        )?;
+        let partitions =
+            firmware::LegacyLayout::from_device(&previous)?.partitions(Some(capacity))?;
+        ensure_no_overlap(&partitions, PARAM_LBA, sector_count, None)?;
     } else if previous[..block.len()].iter().any(|&b| b != 0) {
         return Err("The target PARM sectors contain unrecognized data; no write performed".into());
     }
-    write_verified(&mut session, PARAM_LBA, &block).await
+    write_lba(&mut session, PARAM_LBA, &block).await
 }
 
 async fn write_loader(path: &Path) -> Result<(), String> {
     let (mut file, size) = input(path)?;
     let (mut session, capacity) = open_device().await?;
     require_sd_emmc(&mut session).await?;
-    let (_, partitions) = partition_layout(&mut session, capacity).await?;
-    let supports_new_idb = session.execute(operation::capability()).await?.new_idb();
-    let writes = loader::idb_writes(&mut file, 0, size, supports_new_idb)?;
-    for write in &writes {
-        let sectors = (write.data.len() / SECTOR) as u64;
-        check_range(write.sector, sectors, capacity)?;
-        ensure_no_overlap(&partitions, write.sector, sectors)?;
-        if write.sector < 34 || write.sector + sectors > capacity.saturating_sub(33) {
-            return Err("IDB would overlap reserved GPT sectors".into());
-        }
+    let write = session.idb_write(&mut file, 0, size).await?;
+    let sectors = (write.data.len() / SECTOR) as u64;
+    check_range(write.sector, sectors, capacity)?;
+    if write.sector < gpt::DEVICE_PRIMARY_SECTORS
+        || write.sector + sectors > capacity.saturating_sub(33)
+    {
+        return Err("IDB would overlap reserved GPT sectors".into());
     }
-    for write in writes {
-        write_verified(&mut session, write.sector, &write.data).await?;
-    }
-    Ok(())
+    write_lba(&mut session, write.sector, &write.data).await
 }
 
-fn ensure_no_overlap(parts: &[PartitionInfo], start: u64, sectors: u64) -> Result<(), String> {
+fn ensure_no_overlap(
+    parts: &[PartitionInfo],
+    start: u64,
+    sectors: u64,
+    except: Option<&PartitionInfo>,
+) -> Result<(), String> {
     for part in parts {
-        if start < part.start_sector + part.sectors && part.start_sector < start + sectors {
+        if except.is_some_and(|target| std::ptr::eq(part, target)) {
+            continue;
+        }
+        if start < part.start_sector.saturating_add(part.sectors)
+            && part.start_sector < start + sectors
+        {
             return Err(format!(
                 "Maintenance write overlaps partition {}",
                 part.name
@@ -403,36 +379,34 @@ fn ensure_no_overlap(parts: &[PartitionInfo], start: u64, sectors: u64) -> Resul
     Ok(())
 }
 
-async fn write_verified(session: &mut Session, start: u64, bytes: &[u8]) -> Result<(), String> {
+async fn write_lba(session: &mut Session, start: u64, bytes: &[u8]) -> Result<(), String> {
     for (index, data) in bytes.chunks(CHUNK_BYTES).enumerate() {
         let lba = start + (index * CHUNK_BYTES / SECTOR) as u64;
         session
             .write(lba, data)
             .await
             .map_err(|e| format!("Write at LBA {lba}: {e}; device may be partially written"))?;
-        let mut readback = vec![0; data.len()];
-        session
-            .read(lba, &mut readback)
-            .await
-            .map_err(|e| format!("Readback at LBA {lba}: {e}; stopped after a write"))?;
-        if readback != data {
-            return Err(format!(
-                "Readback mismatch at LBA {lba}; stopped without writing subsequent chunks"
-            ));
-        }
     }
     Ok(())
 }
 
 fn check_range(start: u64, sectors: u64, capacity: u64) -> Result<(), String> {
+    check_address(start, sectors)?;
+    if start + sectors > capacity {
+        return Err(format!(
+            "LBA range is outside the device capacity of {capacity} sectors"
+        ));
+    }
+    Ok(())
+}
+
+fn check_address(start: u64, sectors: u64) -> Result<(), String> {
     if sectors == 0
         || start
             .checked_add(sectors)
-            .is_none_or(|end| end > capacity || end > u64::from(u32::MAX) + 1)
+            .is_none_or(|end| end > ROCKUSB_SECTORS)
     {
-        return Err(format!(
-            "LBA range is empty or outside the device capacity of {capacity} sectors"
-        ));
+        return Err("LBA range is empty or exceeds RockUSB's 32-bit addressing".into());
     }
     Ok(())
 }

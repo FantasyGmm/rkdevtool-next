@@ -26,7 +26,138 @@ pub struct GptImage {
     pub partitions: Vec<PartitionInfo>,
 }
 
+pub const DEVICE_PRIMARY_SECTORS: u64 = FIRST_USABLE;
+pub const DEVICE_PRIMARY_BYTES: usize = DEVICE_PRIMARY_SECTORS as usize * SECTOR_SIZE;
+
+/// rkdeveloptool's device commands read the first 34 sectors. Loader access
+/// to that area does not imply access to the disk tail or a valid backup GPT.
+pub fn parse_device_primary(
+    metadata: &[u8; DEVICE_PRIMARY_BYTES],
+) -> Result<Option<Vec<PartitionInfo>>, String> {
+    let header = &metadata[SECTOR_SIZE..2 * SECTOR_SIZE];
+    if !header.starts_with(b"EFI PART") {
+        return Ok(None);
+    }
+    let count = read_u32(header, 80) as usize;
+    let entry_size = read_u32(header, 84) as usize;
+    if count == 0
+        || count > ENTRY_COUNT
+        || !(ENTRY_SIZE..=1024).contains(&entry_size)
+        || !entry_size.is_power_of_two()
+        || count * entry_size > TABLE_SIZE
+        || read_u64(header, 72) != 2
+    {
+        return Err("Primary GPT entry array is not within the 34-sector Rockchip layout".into());
+    }
+    let mut partitions = Vec::new();
+    for entry in metadata[2 * SECTOR_SIZE..]
+        .chunks_exact(entry_size)
+        .take(count)
+    {
+        if entry.iter().all(|&byte| byte == 0) {
+            continue;
+        }
+        let start = read_u64(entry, 32);
+        let end = read_u64(entry, 40);
+        let sectors = end
+            .checked_sub(start)
+            .and_then(|len| len.checked_add(1))
+            .ok_or("Invalid partition range in primary GPT")?;
+        let size = sectors
+            .checked_mul(SECTOR_SIZE as u64)
+            .ok_or("Primary GPT partition size overflows")?;
+        let name: Vec<_> = entry[56..128]
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .take_while(|&unit| unit != 0)
+            .collect();
+        let name = String::from_utf16(&name).map_err(|_| "Invalid UTF-16 name in primary GPT")?;
+        if name.is_empty() || name.chars().any(char::is_control) {
+            return Err("Empty or control-character name in primary GPT".into());
+        }
+        partitions.push(PartitionInfo {
+            name,
+            start_sector: start,
+            sectors,
+            size,
+        });
+    }
+    Ok(Some(partitions))
+}
+
+/// Rebuild a Rockchip 67-sector metadata image for the actual target capacity.
+/// The source primary must be internally valid; the supplied backup is replaced.
+#[cfg(feature = "maintenance-cli")]
+pub fn resize_image(bytes: &[u8], capacity: u64) -> Result<GptImage, String> {
+    if bytes.len() != DEVICE_PRIMARY_BYTES + TABLE_SIZE + SECTOR_SIZE {
+        return Err("Expected a 67-sector Rockchip GPT metadata image".into());
+    }
+    if capacity < 2 * FIRST_USABLE {
+        return Err("Device is too small for a 512-byte-sector GPT".into());
+    }
+    let mut primary = bytes[..DEVICE_PRIMARY_BYTES].to_vec();
+    let (mbr, metadata) = primary.split_at_mut(SECTOR_SIZE);
+    let (header, entries) = metadata.split_at_mut(SECTOR_SIZE);
+    let old_capacity = read_u64(header, 32)
+        .checked_add(1)
+        .ok_or("GPT backup header location overflows")?;
+    let old = validate_header(header, old_capacity)?;
+    let mbr_length = read_u32(mbr, 458);
+    if old.table_lba != 2
+        || old.table_bytes > TABLE_SIZE
+        || mbr[510..512] != [0x55, 0xaa]
+        || mbr[450] != 0xee
+        || read_u32(mbr, 454) != 1
+        || !(mbr_length == u32::MAX || u64::from(mbr_length) == old_capacity - 1)
+        || mbr[462..510].iter().any(|&byte| byte != 0)
+    {
+        return Err("GPT image has a nonstandard protective MBR or entry array".into());
+    }
+    parse(header, entries, old_capacity)?;
+
+    let last_usable = capacity - FIRST_USABLE;
+    // Like rkdeveloptool, a last entry ending immediately before the old
+    // backup GPT is the grow partition. Other entries keep their exact bounds.
+    if let Some(last) = entries[..old.table_bytes]
+        .chunks_exact_mut(old.entry_size)
+        .rfind(|entry| entry[..16].iter().any(|&byte| byte != 0))
+    {
+        if read_u64(last, 40) == old_capacity - FIRST_USABLE {
+            write_u64(last, 40, last_usable);
+        }
+    }
+    write_u32(mbr, 458, (capacity - 1).min(u64::from(u32::MAX)) as u32);
+    write_u64(header, 32, capacity - 1);
+    write_u64(header, 48, last_usable);
+    write_u32(header, 88, crc32(&entries[..old.table_bytes]));
+    update_header_checksum(header);
+    let partitions = parse(header, entries, capacity)?;
+
+    let mut backup = entries.to_vec();
+    let mut backup_header = header.to_vec();
+    write_u64(&mut backup_header, 24, capacity - 1);
+    write_u64(&mut backup_header, 32, 1);
+    write_u64(&mut backup_header, 72, capacity - TABLE_SECTORS - 1);
+    update_header_checksum(&mut backup_header);
+    backup.extend_from_slice(&backup_header);
+    Ok(GptImage {
+        primary,
+        backup,
+        partitions,
+    })
+}
+
+#[cfg(feature = "maintenance-cli")]
+fn update_header_checksum(header: &mut [u8]) {
+    let size = read_u32(header, 12) as usize;
+    write_u32(header, 16, 0);
+    let checksum = crc32(&header[..size]);
+    write_u32(header, 16, checksum);
+}
+
+#[cfg(any(test, feature = "maintenance-cli"))]
 struct Header {
+    #[cfg(feature = "maintenance-cli")]
     table_lba: u64,
     table_bytes: usize,
     entry_size: usize,
@@ -35,15 +166,8 @@ struct Header {
     table_crc: u32,
 }
 
-/// Validates the primary header read from LBA 1 and returns its entry array's
-/// starting LBA and exact byte length, not sector count.
-/// A device read may round the length up to whole sectors; CRC32 excludes padding.
-pub fn entry_table_spec(header: &[u8], capacity_sectors: u64) -> Result<(u64, usize), String> {
-    let header = validate_header(header, capacity_sectors)?;
-    Ok((header.table_lba, header.table_bytes))
-}
-
-pub fn parse(
+#[cfg(any(test, feature = "maintenance-cli"))]
+fn parse(
     header: &[u8],
     entries: &[u8],
     capacity_sectors: u64,
@@ -106,6 +230,7 @@ pub fn parse(
     Ok(partitions)
 }
 
+#[cfg(any(test, feature = "maintenance-cli"))]
 fn validate_header(bytes: &[u8], capacity: u64) -> Result<Header, String> {
     if capacity < 68 {
         return Err("Device is too small for a 512-byte-sector GPT".into());
@@ -172,6 +297,7 @@ fn validate_header(bytes: &[u8], capacity: u64) -> Result<Header, String> {
         );
     }
     Ok(Header {
+        #[cfg(feature = "maintenance-cli")]
         table_lba,
         table_bytes,
         entry_size,
@@ -179,119 +305,6 @@ fn validate_header(bytes: &[u8], capacity: u64) -> Result<Header, String> {
         last_usable,
         table_crc: read_u32(bytes, 88),
     })
-}
-
-/// Bounded reads needed to verify both GPT copies. A smaller image is accepted
-/// only by `parse_verified`, never by the primary-only legacy parser.
-pub struct ReadPlan {
-    pub table_lba: u64,
-    pub table_bytes: usize,
-    pub backup_header_lba: u64,
-    /// Informational only: no metadata or partition is automatically rewritten.
-    pub backup_is_not_at_device_end: bool,
-}
-
-pub fn read_plan(primary: &[u8], capacity: u64) -> Result<ReadPlan, String> {
-    let (header, declared_capacity) = validate_embedded_primary(primary, capacity)?;
-    Ok(ReadPlan {
-        table_lba: header.table_lba,
-        table_bytes: header.table_bytes,
-        backup_header_lba: declared_capacity - 1,
-        backup_is_not_at_device_end: declared_capacity != capacity,
-    })
-}
-
-fn validate_embedded_primary(primary: &[u8], capacity: u64) -> Result<(Header, u64), String> {
-    let primary = primary
-        .get(..SECTOR_SIZE)
-        .ok_or("GPT header sector is truncated")?;
-    let declared_capacity = read_u64(primary, 32)
-        .checked_add(1)
-        .ok_or("GPT backup header location overflows")?;
-    if declared_capacity > capacity {
-        return Err("GPT backup header is beyond the physical device".into());
-    }
-    // Use the image's declared end as the stricter boundary for metadata and
-    // partitions, not the larger physical medium's end.
-    Ok((
-        validate_header(primary, declared_capacity)?,
-        declared_capacity,
-    ))
-}
-
-/// Verify the backup header before permitting any reads from its entry array.
-pub fn backup_table_spec(
-    primary: &[u8],
-    backup: &[u8],
-    capacity: u64,
-) -> Result<(u64, usize), String> {
-    let (header, declared_capacity) = validate_embedded_primary(primary, capacity)?;
-    let backup = backup
-        .get(..SECTOR_SIZE)
-        .ok_or("Backup GPT header sector is truncated")?;
-    let header_size = read_u32(backup, 12) as usize;
-    if &backup[..8] != b"EFI PART"
-        || read_u32(backup, 8) != 0x0001_0000
-        || !(HEADER_SIZE..=SECTOR_SIZE).contains(&header_size)
-    {
-        return Err("Invalid backup GPT signature, revision, or header size".into());
-    }
-    if read_u32(backup, 20) != 0 || backup[header_size..].iter().any(|byte| *byte != 0) {
-        return Err("Backup GPT header reserved bytes are nonzero".into());
-    }
-    let mut checked = backup[..header_size].to_vec();
-    checked[16..20].fill(0);
-    if crc32(&checked) != read_u32(backup, 16) {
-        return Err("Backup GPT header CRC32 does not match".into());
-    }
-    if read_u64(backup, 24) != declared_capacity - 1 || read_u64(backup, 32) != 1 {
-        return Err("Backup GPT header locations contradict the primary header".into());
-    }
-    // Compare usable range, disk GUID, dimensions, table checksum, and any
-    // header extension. Current/alternate/table LBAs and header CRC differ.
-    if backup[8..16] != primary[8..16]
-        || backup[40..72] != primary[40..72]
-        || backup[80..header_size] != primary[80..header_size]
-    {
-        return Err("Primary and backup GPT headers disagree".into());
-    }
-    let table_lba = read_u64(backup, 72);
-    let sectors = (header.table_bytes as u64).div_ceil(SECTOR_SIZE as u64);
-    let table_end = table_lba
-        .checked_add(sectors)
-        .ok_or("Backup GPT entry array location overflows")?;
-    if table_lba <= header.last_usable || table_end > declared_capacity - 1 {
-        return Err("Backup GPT entry array overlaps usable space or its header".into());
-    }
-    Ok((table_lba, header.table_bytes))
-}
-
-/// Read-only compatibility with RAW GPT images copied onto larger media.
-/// Both copies must be valid and identical; this does not repair, relocate,
-/// expand, or otherwise modify anything on disk.
-pub fn parse_verified(
-    primary: &[u8],
-    entries: &[u8],
-    backup: &[u8],
-    backup_entries: &[u8],
-    capacity: u64,
-) -> Result<Vec<PartitionInfo>, String> {
-    let (_, bytes) = backup_table_spec(primary, backup, capacity)?;
-    let (_, declared_capacity) = validate_embedded_primary(primary, capacity)?;
-    let partitions = parse(primary, entries, declared_capacity)?;
-    let entries = entries
-        .get(..bytes)
-        .ok_or("GPT partition entry array is truncated")?;
-    let backup_entries = backup_entries
-        .get(..bytes)
-        .ok_or("Backup GPT partition entry array is truncated")?;
-    if crc32(backup_entries) != read_u32(backup, 88) {
-        return Err("Backup GPT partition entry array CRC32 does not match".into());
-    }
-    if entries != backup_entries {
-        return Err("Primary and backup GPT entry arrays disagree".into());
-    }
-    Ok(partitions)
 }
 
 struct ParameterPartition {
@@ -663,7 +676,7 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
 }
 
 #[cfg(test)]
-mod verified_tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -699,7 +712,7 @@ mod verified_tests {
         assert!(build(&format!("TYPE: GPT\n{definition}"), 112).is_err());
     }
 
-    fn fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    fn fixture() -> (Vec<u8>, Vec<u8>) {
         let image = build(
             "TYPE: GPT\nCMDLINE: mtdparts=rk:64@34(boot),64@98(root)",
             512,
@@ -708,8 +721,6 @@ mod verified_tests {
         (
             image.primary[512..1024].to_vec(),
             image.primary[1024..].to_vec(),
-            image.backup[TABLE_SIZE..].to_vec(),
-            image.backup[..TABLE_SIZE].to_vec(),
         )
     }
 
@@ -719,94 +730,54 @@ mod verified_tests {
         write_u32(header, 16, crc);
     }
 
-    fn tables_checksum(primary: &mut [u8], backup: &mut [u8], entries: &[u8]) {
+    fn table_checksum(primary: &mut [u8], entries: &[u8]) {
         let crc = crc32(entries);
         write_u32(primary, 88, crc);
-        write_u32(backup, 88, crc);
         checksum(primary);
-        checksum(backup);
     }
 
     #[test]
-    fn accepts_verified_smaller_image_without_expanding_partitions() {
-        let (h, e, b, be) = fixture();
-        let plan = read_plan(&h, 1024).unwrap();
-        assert!(plan.backup_is_not_at_device_end);
-        assert_eq!(plan.backup_header_lba, 511);
-        assert_eq!(backup_table_spec(&h, &b, 1024).unwrap(), (479, TABLE_SIZE));
-        let partitions = parse_verified(&h, &e, &b, &be, 1024).unwrap();
+    fn accepts_valid_primary_at_its_declared_capacity() {
+        let (h, e) = fixture();
+        let partitions = parse(&h, &e, 512).unwrap();
         assert_eq!(partitions.len(), 2);
         assert_eq!(partitions[1].start_sector, 98);
         assert_eq!(partitions[1].sectors, 64);
-        assert!(!read_plan(&h, 512).unwrap().backup_is_not_at_device_end);
         assert!(
             parse(&h, &e, 1024).is_err(),
-            "Primary-only API must remain strict"
+            "Local primary GPT validation must remain strict"
         );
+        assert!(parse(&h, &e, 511).is_err());
     }
 
     #[test]
     fn rejects_corrupt_headers_and_entry_arrays() {
-        let (h, e, b, be) = fixture();
+        let (h, e) = fixture();
         let mut bad = h.clone();
         bad[56] ^= 1;
-        assert!(read_plan(&bad, 1024).is_err());
-        let mut bad = b.clone();
-        bad[56] ^= 1;
-        assert!(parse_verified(&h, &e, &bad, &be, 1024).is_err());
+        assert!(parse(&bad, &e, 512).is_err());
         let mut bad = e.clone();
         bad[0] ^= 1;
-        assert!(parse_verified(&h, &bad, &b, &be, 1024).is_err());
-        let mut bad = be.clone();
-        bad[0] ^= 1;
-        assert!(parse_verified(&h, &e, &b, &bad, 1024).is_err());
-    }
-
-    #[test]
-    fn rejects_correctly_checksummed_contradictory_backup() {
-        let (h, e, mut b, be) = fixture();
-        write_u64(&mut b, 32, 2);
-        checksum(&mut b);
-        assert!(parse_verified(&h, &e, &b, &be, 1024).is_err());
-        let (_, _, mut b, _) = fixture();
-        b[56] ^= 1;
-        checksum(&mut b);
-        assert!(parse_verified(&h, &e, &b, &be, 1024).is_err());
-    }
-
-    #[test]
-    fn rejects_backup_array_overlaps_and_out_of_bounds() {
-        let (h, _, b, _) = fixture();
-        for table_lba in [34, 478, 500, 1024, u64::MAX] {
-            let mut bad = b.clone();
-            write_u64(&mut bad, 72, table_lba);
-            checksum(&mut bad);
-            assert!(backup_table_spec(&h, &bad, 1024).is_err());
-        }
-        assert!(read_plan(&h, 511).is_err());
-        let mut bad = h.clone();
-        write_u64(&mut bad, 32, u64::MAX);
-        checksum(&mut bad);
-        assert!(read_plan(&bad, 1024).is_err());
+        assert!(parse(&h, &bad, 512).is_err());
     }
 
     #[test]
     fn rejects_partition_overlap_and_bounds_even_with_valid_crcs() {
-        let (h, e, b, _) = fixture();
+        let (h, e) = fixture();
         for (start, end) in [(97, 161), (478, 479), (600, 601), (33, 34), (100, 99)] {
-            let (mut h, mut e, mut b) = (h.clone(), e.clone(), b.clone());
+            let (mut h, mut e) = (h.clone(), e.clone());
             write_u64(&mut e[ENTRY_SIZE..], 32, start);
             write_u64(&mut e[ENTRY_SIZE..], 40, end);
-            tables_checksum(&mut h, &mut b, &e);
-            assert!(parse_verified(&h, &e, &b, &e, 1024).is_err());
+            table_checksum(&mut h, &e);
+            assert!(parse(&h, &e, 512).is_err());
         }
     }
 
     #[test]
     fn rejects_declared_usable_space_past_embedded_backup() {
-        let (mut h, _, _, _) = fixture();
+        let (mut h, e) = fixture();
         write_u64(&mut h, 48, 700);
         checksum(&mut h);
-        assert!(read_plan(&h, 1024).is_err());
+        assert!(parse(&h, &e, 512).is_err());
     }
 }

@@ -57,14 +57,16 @@ xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
 
 1. 按开发板文档进入 **Maskrom / Loader**，将 USB 数据线接到板卡的 OTG / Device 接口。
 2. 在「烧录」页选择整包固件或 RAW 镜像。带内置 Loader 的 RKFW 整包可从 **Maskrom** 直接烧录。
-3. RAW、独立 RKAF 和未检查内容的压缩包不能从 Maskrom 直接烧录。先点击「加载 Loader」，选择与板卡匹配的 Loader，等设备以 **Loader** 模式重新连接。
+3. RAW、独立 RKAF 和未检查内容的压缩包不能从 Maskrom 直接烧录。先点击「加载 Loader」，选择与板卡匹配的 Loader；开始写入前，等设备以 **Loader** 模式重新出现。
 4. 核对设备与写入范围。单个分区镜像可在「分区」页选择目标分区写入；RAW 镜像也可按指定 LBA 写入。选择是否「完成后重启」，确认后开始烧录。
+
+**Loader 下载状态：** 独立 RAM Loader 下载按 RockUSB 命令序列完成判定，末尾等待 1 秒；不要求额外读取 ChipInfo 或确认 Loader 已接管。若要继续烧录，等设备以 Loader 模式重新出现即可。从 Maskrom 启动整包 RKFW 时，实际写入前需要 Loader 重连；设备已处于 Loader 模式时无需额外重连。整包 RKFW 仅支持 eMMC / SD。
 
 **写入和擦除会覆盖设备数据。** 先备份重要内容，并保持稳定供电。停止任务在数据块边界生效，已写入或擦除的数据不会回滚。一次只连接一台待操作设备。
 
 ## 主要功能
 
-- **设备识别**：自动扫描 USB、区分 Maskrom / Loader、Loader 下载后同端口重连与协议握手。
+- **设备识别**：自动扫描 USB、区分 Maskrom / Loader，并识别 Loader 下载后的同端口重连。
 - **芯片与存储信息**：显示原始 Chip ID、已识别的芯片型号、容量、Flash 信息与 Loader 能力。未知 Chip ID 保留原始值，不通过 USB PID 猜型号。
 - **固件烧录**：RKFW / RKAF 容器解析、RAW 镜像、写入范围检查及固件 CRC 校验。
 - **分区管理**：读取 GPT、分区写入、分区备份与擦除、整机备份、按地址写入。
@@ -160,16 +162,16 @@ cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
 
 ## 适用范围
 
-- Loader 和固件必须与实际开发板匹配；不支持受保护或签名 Loader 的通用下载流程。
+- Loader 和固件必须与实际开发板匹配，可用操作随 Loader 能力而异。独立 RAM Loader 下载会下发有效容器项，不会因「仅用于 Flash」标记而拒绝；但不保证受保护或签名 Loader 能启动。持久化 IDB 写入会拒绝这类 Loader。
 - RKFW 整包写入面向能确定 IDB / GPT 布局的 **eMMC / SD**。加密、NAND 或无法安全规划的布局会被拒绝；不要将 RKFW 容器强行作为 RAW 写入。
-- 分区管理以 **GPT** 为基础，不猜测未知分区表或烧录地址。较小 GPT 整盘镜像写入较大设备后的备份 GPT 迁移、按分区操作的实时 GPT 身份复核仍需完善；操作前核对布局，避免在外部工具改表后沿用旧列表。
+- 分区管理以 **GPT 主表** 为基础，只读取首 34 个扇区，不校验备份 GPT；不猜测未知分区表或烧录地址。操作前核对布局，避免在外部工具改表后沿用旧列表。
 - 压缩文件支持 ZIP / gzip / xz / bzip2；不支持 7z、zstd、tar。
 - USB3 切换、清空序列号、安全模式检测和设备串口日志暂未开放。
 - Windows 的构建与打包由 CI 完成，真机 USB 通信仍需在对应 Windows 电脑和板卡上验证。当前 macOS 真机调试使用 RK3576；其他板卡请以实际兼容性为准。
 
 ## 独立维护命令（实验性）
 
-维护命令用 Rust 和项目现有 RockUSB 后端实现，不调用外部烧录工具，也不接入 UI 或 MCP。发布的 CLI 用 `rkdevtool-next-cli maintenance --help` 查看这些命令。使用 USB 命令前关闭桌面应用并停止 MCP 服务，只连接一台处于 Loader 模式的设备。可先运行只读的 `ppt`、`rl`；写设备必须显式传入 `--allow-device-write`。
+维护命令用 Rust 和项目现有 RockUSB 后端实现，不调用外部烧录工具，也不接入 UI 或 MCP。发布的 CLI 用 `rkdevtool-next-cli maintenance --help` 查看这些命令。使用 USB 命令前关闭桌面应用并停止 MCP 服务，只连接一台 Loader 或 Maskrom 设备；具体命令仍受当前启动状态支持能力限制。可先运行只读的 `ppt`、`rl`；写设备必须显式传入 `--allow-device-write`。
 
 ```bash
 cargo run --locked --manifest-path src-tauri/Cargo.toml --no-default-features \
@@ -178,12 +180,12 @@ cargo run --locked --manifest-path src-tauri/Cargo.toml --no-default-features \
 
 | 命令 | 范围 |
 | --- | --- |
-| `ppt`、`rl` | 读取并验证 GPT；没有 GPT 特征时才尝试读取带 CRC 的旧 PARM。也可读取指定扇区到新文件。 |
-| `wl`、`wlx` | 按地址或经过验证的分区写入 RAW / Android sparse v1。先完整校验 sparse 结构及其 CRC（若提供）；跳过块按零写入。 |
-| `gpt`、`prm`、`ul` | 写入 GPT、旧 PARM、或持久化未签名 MiniLoader。GPT 镜像只接受符合当前容量的 67 扇区元数据，不自动迁移；`prm` 不覆盖 GPT；`ul` 要求已有可验证的分区布局。 |
+| `ppt`、`rl` | `ppt` 读取首 34 个扇区中的主 GPT；无主 GPT 签名时，只在已读数据范围内解析旧 PARM，不把 RKNS 当作回退格式，也不要求 CRC 或 TYPE；仅当最后一项为 grow 时才按设备容量补齐。`rl` 可读取指定扇区到新文件。 |
+| `wl`、`wlx` | 按地址或经过验证的分区写入 RAW / Android sparse v1。RAW LBA 读写仅在当前启动状态支持 LBA 时可用；先完整校验 sparse 结构及其 CRC（若提供），跳过块按零写入。 |
+| `gpt`、`prm`、`ul` | 从参数 / 67 扇区镜像写入 GPT 元数据、写入旧 PARM，或将未签名 MiniLoader 持久化到 eMMC / SD；`prm` 不覆盖 GPT。 |
 | `unpack`、`pack`、`tagspl` | 本地提取、以未签名 MiniLoader 模板重打包、或为 SPL 加前缀。重打包保留模板芯片、版本与条目顺序，不支持从任意 INI 新建 Loader。输出不覆盖现有文件。 |
 
-设备写入限定 eMMC/SD，逐块读回比较，失败立即停止后续写入。UBI/NAND 的擦块和坏块映射未接入。
+RKFW 整包和 `ul` 持久化写入仅支持 eMMC / SD；维护 `gpt` / `prm` 按扇区写入，不做 eMMC / SD 介质预检，这不代表支持 NAND。`wl` / `wlx` 不做 ReadStorage 预读，但仍检查目标范围；写入不逐块读回比较，失败即停止后续写入。UBI / NAND 所需的擦块和坏块映射未接入。
 
 ## 从源码运行
 

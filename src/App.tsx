@@ -639,20 +639,7 @@ export default function App() {
     setErasePartition("");
     setToolResult(null);
     setStorage(demo ? "eMMC" : "—");
-    if (!native || !device || device.mode !== "loader" || deviceWorkBusy()) return;
-    const key = currentDeviceKey.current;
-    const pendingScan = beginDeviceWork();
-    setToolBusy(true);
-    void (async () => {
-      try {
-        await pendingScan;
-        if (currentDeviceKey.current !== key) return;
-        const report = await api.queryDevice(device.id, "currentStorage");
-        if (currentDeviceKey.current === key) setStorage(report.currentStorage || report.values.find(([label]) => label === "存储介质")?.[1] || "—");
-      } catch (e) { addLog(errorText(e), "warning"); }
-      finally { busyRef.current = false; setToolBusy(false); }
-    })();
-  }, [selectedId, device?.mode, addLog, beginDeviceWork]);
+  }, [selectedId, device?.mode]);
   useEffect(() => {
     localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
     const media = matchMedia("(prefers-color-scheme: dark)");
@@ -1070,14 +1057,25 @@ export default function App() {
   const showInformation = async (title: string) => {
     if ((!native && !demo) || !device || deviceWorkBusy()) return;
     if (native) {
-      const queries: Record<string, DeviceQuery> = { "Flash ID": "flashId", "Flash 信息": "flashInfo", "Chip 信息": "chipInfo", Capability: "capability", "测试设备": "testDevice" };
+      const queries: Record<string, DeviceQuery> = {
+        "Flash ID": "flashId",
+        "Flash 信息": "flashInfo",
+        "Chip 信息": "chipInfo",
+        Capability: "capability",
+        "测试设备": "testDevice",
+        "当前存储": "currentStorage",
+      };
       const key = currentDeviceKey.current;
       const pendingScan = beginDeviceWork();
       setToolBusy(true);
       try {
         await pendingScan;
         const report = await api.queryDevice(device.id, queries[title]);
-        if (currentDeviceKey.current === key) { setToolResult(report); if (report.currentStorage) setStorage(report.currentStorage); }
+        if (currentDeviceKey.current === key) {
+          setToolResult(report);
+          const currentStorage = report.currentStorage || report.values.find(([label]) => label === "存储介质")?.[1];
+          if (currentStorage) setStorage(currentStorage);
+        }
         addLog(title + " · 读取完成");
       } catch (e) { fail(errorText(e)); }
       finally { busyRef.current = false; setToolBusy(false); }
@@ -1106,6 +1104,7 @@ export default function App() {
         ["连接", "正常"],
         ["响应时间", "2 ms"],
       ],
+      当前存储: [["存储介质", storage]],
     };
     setToolResult({ title, values: values[title] });
     addLog(title + " · 读取完成");
@@ -1862,6 +1861,7 @@ export default function App() {
                     "Chip 信息",
                     "Capability",
                     "测试设备",
+                    "当前存储",
                   ].map((title) => (
                     <button
                       key={title}

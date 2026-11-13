@@ -527,6 +527,10 @@ fn decode_parameter(payload: &[u8]) -> Result<String, String> {
         }
         None => text,
     };
+    parameter_text(text).map(str::to_owned)
+}
+
+fn parameter_text(text: &[u8]) -> Result<&str, String> {
     if !text
         .iter()
         .all(|b| b.is_ascii_graphic() || matches!(*b, b' ' | b'\t' | b'\r' | b'\n'))
@@ -535,8 +539,7 @@ fn decode_parameter(payload: &[u8]) -> Result<String, String> {
     }
     Ok(std::str::from_utf8(text)
         .map_err(|_| "Rockchip parameter is not ASCII")?
-        .trim()
-        .to_owned())
+        .trim())
 }
 
 fn parse_parameter(parameter: &str, warnings: &mut Vec<String>) -> Result<Vec<Layout>, String> {
@@ -589,15 +592,26 @@ fn parse_layout(
         ),
         _ => (),
     }
-    let definition = mtdparts.ok_or("Parameter has no CMDLINE mtdparts layout")?;
+    parse_layout_entries(
+        mtdparts.ok_or("Parameter has no CMDLINE mtdparts layout")?,
+        legacy,
+        !legacy && partition_type.is_some(),
+        34,
+    )
+}
+
+fn parse_layout_entries(
+    definition: &str,
+    legacy: bool,
+    allow_anonymous: bool,
+    minimum_start: u64,
+) -> Result<Vec<Layout>, String> {
     let (device, definition) = definition
         .split_once(':')
         .ok_or("Invalid mtdparts device declaration")?;
-    // Some GPT-only RKFW packages omit the mtdparts device name. Keep the
-    // existing name requirement when GPT is only inferred.
-    if (device.is_empty() && (legacy || partition_type.is_none()))
-        || definition.is_empty()
-        || definition.contains(';')
+    // RKFW requires a device name when GPT is only inferred; on-device PARM
+    // may omit the name regardless of TYPE.
+    if (device.is_empty() && !allow_anonymous) || definition.is_empty() || definition.contains(';')
     {
         return Err("Exactly one nonempty mtdparts device layout is supported".into());
     }
@@ -607,7 +621,7 @@ fn parse_layout(
     }
     let mut names = HashSet::new();
     let mut layouts = Vec::new();
-    let mut previous_end = 34;
+    let mut previous_end = minimum_start;
     for (index, entry) in entries.iter().enumerate() {
         let (extent, name) = entry
             .split_once('(')
@@ -658,7 +672,7 @@ fn parse_layout(
         };
         if declared_size == Some(0) || start < previous_end {
             return Err(format!(
-                "Parameter partition '{name}' is empty, overlaps another partition or GPT metadata"
+                "Parameter partition '{name}' is empty or overlaps a preceding partition or reserved sectors"
             ));
         }
         let sectors = if grow { None } else { declared_size };
@@ -686,51 +700,91 @@ fn parse_layout(
 }
 
 #[cfg(feature = "maintenance-cli")]
-pub(crate) fn decode_legacy_sectors(sectors: &[u8]) -> Result<String, String> {
-    if sectors.len() < 12 || !sectors.starts_with(b"PARM") {
-        return Err("No legacy Rockchip PARM block at LBA 8192".into());
-    }
-    let end = (le32(sectors, 4) as usize)
-        .checked_add(12)
-        .ok_or("Legacy parameter length overflows")?;
-    decode_parameter(
-        sectors
-            .get(..end)
-            .ok_or("Legacy parameter block is truncated")?,
-    )
-}
+pub(crate) struct LegacyLayout(Vec<Layout>);
 
 #[cfg(feature = "maintenance-cli")]
-pub(crate) fn legacy_partitions(
-    parameter: &str,
-    capacity: u64,
-) -> Result<Vec<crate::model::PartitionInfo>, String> {
-    parse_layout(parameter, &mut Vec::new(), true)?
-        .into_iter()
-        .map(|part| {
-            let available = capacity
-                .checked_sub(part.start)
-                .filter(|&length| length != 0)
-                .ok_or_else(|| {
-                    format!("Legacy partition {} starts outside the device", part.name)
-                })?;
-            let sectors = part.sectors.unwrap_or(available);
-            if sectors > available {
-                return Err(format!(
-                    "Legacy partition {} exceeds the device capacity",
-                    part.name
-                ));
+impl LegacyLayout {
+    pub(crate) fn from_device(sectors: &[u8]) -> Result<Self, String> {
+        if sectors.len() < 8 || !sectors.starts_with(b"PARM") {
+            return Err("No legacy Rockchip PARM block at LBA 8192".into());
+        }
+        let end = 8_usize
+            .checked_add(le32(sectors, 4) as usize)
+            .ok_or("Legacy parameter length overflows")?;
+        let text = sectors
+            .get(8..end)
+            .ok_or("Legacy parameter block is truncated")?;
+        // The device fallback uses the length-delimited text, not the optional
+        // CRC trailer. RKAF members still use the stricter container decoder.
+        let text = parameter_text(text.split(|&byte| byte == 0).next().unwrap_or_default())?;
+        let mut definition = None;
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#'))
+        {
+            if let Some((_, value)) = line.split_once("mtdparts=") {
+                let value = value.split_ascii_whitespace().next().unwrap_or_default();
+                if definition.replace(value).is_some() || value.contains("mtdparts=") {
+                    return Err("Parameter contains more than one mtdparts layout".into());
+                }
             }
-            Ok(crate::model::PartitionInfo {
-                name: part.name,
-                start_sector: part.start,
-                sectors,
-                size: sectors
-                    .checked_mul(DISK_SECTOR)
-                    .ok_or("Legacy partition byte size overflows")?,
+        }
+        parse_layout_entries(
+            definition.ok_or("Parameter has no mtdparts layout")?,
+            true,
+            true,
+            0,
+        )
+        .map(Self)
+    }
+
+    pub(crate) fn from_parameter(parameter: &str) -> Result<Self, String> {
+        parse_layout(parameter, &mut Vec::new(), true).map(Self)
+    }
+
+    pub(crate) fn has_grow(&self) -> bool {
+        self.0.iter().any(|part| part.sectors.is_none())
+    }
+
+    pub(crate) fn partitions(
+        self,
+        capacity: Option<u64>,
+    ) -> Result<Vec<crate::model::PartitionInfo>, String> {
+        self.0
+            .into_iter()
+            .map(|part| {
+                let available = capacity
+                    .map(|capacity| {
+                        capacity
+                            .checked_sub(part.start)
+                            .filter(|&length| length != 0)
+                            .ok_or_else(|| {
+                                format!("Legacy partition {} starts outside the device", part.name)
+                            })
+                    })
+                    .transpose()?;
+                let sectors = part
+                    .sectors
+                    .or(available)
+                    .ok_or("Cannot size a legacy grow partition without the device capacity")?;
+                if available.is_some_and(|available| sectors > available) {
+                    return Err(format!(
+                        "Legacy partition {} exceeds the device capacity",
+                        part.name
+                    ));
+                }
+                Ok(crate::model::PartitionInfo {
+                    name: part.name,
+                    start_sector: part.start,
+                    sectors,
+                    size: sectors
+                        .checked_mul(DISK_SECTOR)
+                        .ok_or("Legacy partition byte size overflows")?,
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 #[cfg(feature = "maintenance-cli")]
@@ -775,6 +829,10 @@ fn inspect_loader(file: &mut File, file_size: u64) -> Result<(), String> {
     }
     let mut total_entries = 0;
     for descriptor in [25, 31, 37] {
+        // A downloadable loader need not have a usable flash-boot table.
+        if descriptor == 37 && total_entries != 0 {
+            break;
+        }
         let count = header[descriptor] as usize;
         let table_offset = le32(&header, descriptor + 1) as u64;
         let record_size = header[descriptor + 5] as usize;
@@ -786,13 +844,15 @@ fn inspect_loader(file: &mut File, file_size: u64) -> Result<(), String> {
         }
         let table = read_at(file, table_offset, count * record_size, file_size)?;
         for record in table.chunks_exact(record_size) {
-            if record[0] as usize != record_size {
-                return Err("Rockchip Loader entry size is inconsistent".into());
-            }
             let offset = le32(record, 45) as u64;
             let size = le32(record, 49) as u64;
-            if offset < header_size || size == 0 {
-                return Err("Rockchip Loader payload offset or size is invalid".into());
+            // DownloadBoot uses the descriptor's stride and skips empty RAM
+            // entries without accessing their payload offsets.
+            if size == 0 {
+                continue;
+            }
+            if offset < header_size {
+                return Err("Rockchip Loader payload offset is invalid".into());
             }
             range_end(offset, size, file_size, "Rockchip Loader payload")?;
             total_entries += 1;

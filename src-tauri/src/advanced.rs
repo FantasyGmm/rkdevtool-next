@@ -224,10 +224,6 @@ pub async fn switch_medium(
     requested: StorageIndex,
 ) -> Result<QueryReport, String> {
     let mut session = loader_session(device_id).await?;
-    let capability = session.execute(operation::capability()).await?;
-    if !capability.switch_storage() {
-        return Err("当前 Loader 未报告切换存储能力；未发送切换命令".into());
-    }
     session
         .execute(operation::switch_storage(requested))
         .await
@@ -240,15 +236,10 @@ pub async fn switch_medium(
             "存储切换校验失败：请求 {requested}，设备返回 {actual}；请刷新设备，勿使用旧分区信息"
         ));
     }
-    let sectors = session.capacity().await.map_err(|e| {
-        format!("已切换到 {actual}，但读取容量失败；请刷新设备，勿使用旧分区信息：{e}")
-    })?;
     let mut result = report(
         "存储切换完成",
         vec![
             ("当前存储", actual.to_string()),
-            ("容量（字节）", (sectors * 512).to_string()),
-            ("扇区数（512 字节）", sectors.to_string()),
             (
                 "提示",
                 "请重新读取分区；原存储的分区与容量不可继续使用".into(),

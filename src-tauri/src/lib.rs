@@ -51,21 +51,17 @@ async fn scan(backend: &Backend) -> Result<Vec<DeviceInfo>, String> {
 async fn probe_targets(targets: Vec<usb::Target>) -> Result<Vec<DeviceInfo>, String> {
     let mut devices = Vec::new();
     for mut target in targets {
+        usb::detect_handoff(&mut target).await;
         if target.info.mode == "loader" {
-            let detected = format!(
-                "已检测到 Loader 候选设备（{}），但读取失败",
-                target.description()
-            );
-            let mut session = usb::probe_loader(&mut target)
-                .await
-                .map_err(|e| format!("{detected}：{e}"))?;
-            target.info.capacity = Some(
-                session
-                    .capacity()
-                    .await
-                    .map_err(|e| format!("{detected}：{e}"))?
-                    * 512,
-            );
+            // These values enrich the device list; unsupported metadata
+            // commands should not hide the device or hold the scan gate for
+            // a regular transfer timeout. Drop the session on a failed read.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                let mut session = usb::Session::open(&target).await?;
+                target.info.capacity = Some(session.capacity().await? * 512);
+                session.describe_chip(&mut target).await
+            })
+            .await;
         }
         devices.push(target.info);
     }
@@ -101,13 +97,13 @@ async fn partitions(backend: &Backend, device_id: &str) -> Result<Vec<PartitionI
         .clone()
         .try_lock_owned()
         .map_err(|_| "设备任务运行中，暂不能读取分区")?;
-    let target = usb::resolve(device_id).await?;
+    let mut target = usb::resolve(device_id).await?;
+    usb::detect_handoff(&mut target).await;
     if target.info.mode != "loader" {
         return Err("读取分区需要 Loader 模式；请先下载 Loader".into());
     }
     let mut session = usb::Session::open(&target).await?;
-    let capacity = session.capacity().await?;
-    usb::partitions(&mut session, capacity).await
+    usb::partitions(&mut session).await
 }
 
 #[cfg(feature = "desktop")]

@@ -15,14 +15,12 @@ const SECTOR_SIZE: usize = 512;
 const ENTRY_ALIGN: usize = 2048;
 const IDB_SECTOR: u64 = 64;
 const MAX_LOADER_BYTES: u64 = 64 * 1024 * 1024;
-// Reject unreasonable file-controlled waits before sending any RAM entry.
-const MAX_RAM_ENTRY_DELAY_MS: u32 = 60_000;
 // The supported eMMC/SD boot layout reserves LBA 64..8192 for the IDB.
 const MAX_IDB_BYTES: usize = (8192 - IDB_SECTOR as usize) * SECTOR_SIZE;
 
-pub struct LoaderBlob {
+pub struct LoaderBlob<'a> {
     pub area: u16,
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
     pub delay_ms: u32,
 }
 
@@ -39,115 +37,125 @@ struct Loader {
     flash: Vec<RkBootEntry>,
 }
 
-/// Prepare 0x471 SRAM blobs followed by 0x472 DDR blobs in file order.
-///
-/// BOOT/LDR entries are already RC4-encoded by the loader packer. Even when
-/// `rc4_flag` disables RC4 for *flash boot*, DownloadBoot sends the RAM entries
-/// unchanged. `write_maskrom_area` must add the transfer CRC, not another RC4
-/// layer. The caller observes every delay and waits for USB re-enumeration.
-pub fn ram_blobs(file: &mut File, offset: u64, size: u64) -> Result<Vec<LoaderBlob>, String> {
-    let loader = Loader::read(file, offset, size)?;
-    let mut blobs = Vec::new();
-    for (area, entries) in [(0x471, &loader.ram_471), (0x472, &loader.ram_472)] {
-        for entry in entries {
-            if entry.data_size != 0 {
-                if entry.data_delay > MAX_RAM_ENTRY_DELAY_MS {
-                    return Err(format!(
-                        "MiniLoader RAM entry delay exceeds the supported {} ms limit",
-                        MAX_RAM_ENTRY_DELAY_MS
-                    ));
+/// 0x471 SRAM entries, then 0x472 DDR entries, in table order.
+pub struct RamLoader {
+    bytes: Vec<u8>,
+    entries: Vec<(u16, Range<usize>, u32)>,
+}
+
+impl RamLoader {
+    pub fn read(file: &mut File, offset: u64, size: u64) -> Result<Self, String> {
+        let (header, bytes) = read_container(file, offset, size)?;
+        let payload_end = bytes.len() - 4;
+        let header_size = header.size as usize;
+        let tables = [
+            table_range(&header.entry_471, header_size, payload_end)?,
+            table_range(&header.entry_472, header_size, payload_end)?,
+        ];
+        if overlaps(&tables[0], &tables[1]) {
+            return Err("MiniLoader RAM entry tables overlap".into());
+        }
+        let mut entries = Vec::new();
+        for (area, table, range) in [
+            (0x471, &header.entry_471, &tables[0]),
+            (0x472, &header.entry_472, &tables[1]),
+        ] {
+            if table.count == 0 {
+                continue;
+            }
+            for record in bytes[range.clone()].chunks_exact(table.size as usize) {
+                let entry = RkBootEntry::from_bytes(record[..ENTRY_SIZE].try_into().unwrap());
+                if entry.data_size != 0 {
+                    let data = entry_range(&entry, &tables, header_size, payload_end)?;
+                    entries.push((area, data, entry.data_delay));
                 }
-                blobs.push(LoaderBlob {
-                    area,
-                    data: loader.data(entry).to_vec(),
-                    delay_ms: entry.data_delay,
-                });
             }
         }
+        if entries.is_empty() {
+            return Err("MiniLoader has no nonempty RAM entries".into());
+        }
+        Ok(Self { bytes, entries })
     }
-    if !blobs.iter().any(|blob| blob.area == 0x472) {
-        return Err("MiniLoader has no nonempty 0x472 USB loader entry".into());
+
+    /// DownloadBoot sends the already-encoded bytes unchanged, regardless of
+    /// flash-boot flags. The USB operation adds only the transfer CRC.
+    pub fn blobs(&self) -> impl Iterator<Item = LoaderBlob<'_>> {
+        self.entries
+            .iter()
+            .map(move |(area, data, delay_ms)| LoaderBlob {
+                area: *area,
+                data: &self.bytes[data.clone()],
+                delay_ms: *delay_ms,
+            })
     }
-    Ok(blobs)
 }
 
 /// Prepare the persistent IDB, not the BOOT/LDR container itself.
 ///
 /// The caller must first confirm that the target is eMMC or SD, never NAND,
-/// SPI flash, RAM, or an unknown medium. `new_idb` is the device capability bit,
-/// not a request to convert a legacy loader. A FlashHead entry requires it.
+/// SPI flash, RAM, or an unknown medium. A FlashHead entry requires the
+/// device's new-IDB capability; a legacy loader does not.
 /// Write the returned data with native WriteLBA (0x15, image subcode 0).
 /// This is the official `upgrade_loader` LBA 64 layout; it does not
 /// synthesize NAND pages, ECC, or redundant IDB copies.
-pub fn idb_writes(
-    file: &mut File,
-    offset: u64,
-    size: u64,
-    new_idb: bool,
-) -> Result<Vec<IdbWrite>, String> {
-    let loader = Loader::read(file, offset, size)?;
-    for entry in &loader.flash {
-        let name = entry_name(entry)?;
-        if !["FlashData", "FlashBoot", "FlashHead"]
-            .iter()
-            .any(|known| name.eq_ignore_ascii_case(known))
-        {
-            return Err(format!(
-                "Unsupported persistent loader entry {name:?}; only the eMMC/SD FlashData/FlashBoot layout is supported"
-            ));
-        }
+pub struct PersistentLoader(Loader);
+
+impl PersistentLoader {
+    pub fn read(file: &mut File, offset: u64, size: u64) -> Result<Self, String> {
+        Ok(Self(Loader::read(file, offset, size)?))
     }
 
-    let flash_data = loader.named("FlashData")?;
-    let flash_boot = loader.named("FlashBoot")?;
-    let flash_head = loader.optional_named("FlashHead")?;
-    let mut data = loader.flash_data(flash_data)?;
-    let mut boot = loader.flash_data(flash_boot)?;
-    let data_aligned = aligned_len(data.len())?;
-    let boot_aligned = aligned_len(boot.len())?;
-    let rc4_disabled = loader.header.rc4_flag != 0;
-
-    // The container stores loader blobs encoded in independent 512B RC4
-    // sectors. A nonzero ucRc4Flag means the flash payload must be plaintext.
-    if rc4_disabled {
-        decode_sectors(&mut data);
-        decode_sectors(&mut boot);
+    pub fn has_flash_head(&self) -> Result<bool, String> {
+        Ok(self.0.optional_named("FlashHead")?.is_some())
     }
 
-    let idb = if let Some(head_entry) = flash_head {
-        if !new_idb {
-            return Err(
-                "MiniLoader contains FlashHead, but the device does not support the new IDB format"
-                    .into(),
-            );
-        }
-        let mut head = loader.flash_data(head_entry)?;
+    pub fn idb_write(&self) -> Result<IdbWrite, String> {
+        let loader = &self.0;
+        let flash_data = loader.named("FlashData")?;
+        let flash_boot = loader.named("FlashBoot")?;
+        let flash_head = loader.optional_named("FlashHead")?;
+        let mut data = loader.flash_data(flash_data)?;
+        let mut boot = loader.flash_data(flash_boot)?;
+        let data_aligned = aligned_len(data.len())?;
+        let boot_aligned = aligned_len(boot.len())?;
+        let rc4_disabled = loader.header.rc4_flag != 0;
+
+        // The container stores loader blobs encoded in independent 512B RC4
+        // sectors. A nonzero ucRc4Flag means the flash payload must be plaintext.
         if rc4_disabled {
-            decode_sectors(&mut head);
+            decode_sectors(&mut data);
+            decode_sectors(&mut boot);
         }
-        // FlashHead is opaque to the official upgrader. Check its decoded
-        // envelope so unknown/signed variants do not become arbitrary writes.
-        let mut plain_head = head.clone();
-        if !rc4_disabled {
-            decode_sectors(&mut plain_head);
-        }
-        validate_new_head(&plain_head)?;
-        let head_aligned = aligned_len(head.len())?;
-        let total = checked_idb_len(&[head_aligned, data_aligned, boot_aligned])?;
-        let mut idb = vec![0; total];
-        idb[..head.len()].copy_from_slice(&head);
-        idb[head_aligned..head_aligned + data.len()].copy_from_slice(&data);
-        idb[head_aligned + data_aligned..head_aligned + data_aligned + boot.len()]
-            .copy_from_slice(&boot);
-        idb
-    } else {
-        legacy_idb(&data, &boot, data_aligned, boot_aligned, rc4_disabled)?
-    };
 
-    Ok(vec![IdbWrite {
-        sector: IDB_SECTOR,
-        data: idb,
-    }])
+        let idb = if let Some(head_entry) = flash_head {
+            let mut head = loader.flash_data(head_entry)?;
+            if rc4_disabled {
+                decode_sectors(&mut head);
+            }
+            // FlashHead is opaque to the official upgrader. Check its decoded
+            // envelope so unknown/signed variants do not become arbitrary writes.
+            let mut plain_head = head.clone();
+            if !rc4_disabled {
+                decode_sectors(&mut plain_head);
+            }
+            validate_new_head(&plain_head)?;
+            let head_aligned = aligned_len(head.len())?;
+            let total = checked_idb_len(&[head_aligned, data_aligned, boot_aligned])?;
+            let mut idb = vec![0; total];
+            idb[..head.len()].copy_from_slice(&head);
+            idb[head_aligned..head_aligned + data.len()].copy_from_slice(&data);
+            idb[head_aligned + data_aligned..head_aligned + data_aligned + boot.len()]
+                .copy_from_slice(&boot);
+            idb
+        } else {
+            legacy_idb(&data, &boot, data_aligned, boot_aligned, rc4_disabled)?
+        };
+
+        Ok(IdbWrite {
+            sector: IDB_SECTOR,
+            data: idb,
+        })
+    }
 }
 
 #[cfg(feature = "maintenance-cli")]
@@ -274,29 +282,7 @@ pub(crate) fn repack_container(
 
 impl Loader {
     fn read(file: &mut File, offset: u64, size: u64) -> Result<Self, String> {
-        if !(HEADER_SIZE as u64 + 4..=MAX_LOADER_BYTES).contains(&size) {
-            return Err("MiniLoader size is outside the supported 106-byte to 64-MiB range".into());
-        }
-        let end = offset
-            .checked_add(size)
-            .ok_or("MiniLoader file range overflows")?;
-        let file_len = file
-            .metadata()
-            .map_err(|e| format!("Read loader size: {e}"))?
-            .len();
-        if end > file_len {
-            return Err("MiniLoader extends beyond the selected file".into());
-        }
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|e| format!("Seek MiniLoader: {e}"))?;
-        let mut bytes = vec![0; size as usize];
-        file.read_exact(&mut bytes)
-            .map_err(|e| format!("Read MiniLoader: {e}"))?;
-        let header_bytes = bytes[..HEADER_SIZE]
-            .try_into()
-            .map_err(|_| "Truncated MiniLoader header")?;
-        let header = RkBootHeader::from_bytes(header_bytes)
-            .ok_or("MiniLoader must have a BOOT or LDR header")?;
+        let (header, bytes) = read_container(file, offset, size)?;
         if header.size as usize != HEADER_SIZE {
             return Err(format!(
                 "Unsupported MiniLoader header size {}",
@@ -313,16 +299,17 @@ impl Loader {
             ));
         }
         let payload_end = bytes.len() - 4;
-        let expected = u32::from_le_bytes(bytes[payload_end..].try_into().unwrap());
-        if rockchip_crc32(&bytes[..payload_end]) != expected {
-            return Err("MiniLoader CRC32 mismatch; select an intact loader or update.img".into());
+        let descriptors = [&header.entry_471, &header.entry_472, &header.entry_loader];
+        let mut tables = [0..0, 0..0, 0..0];
+        for (table, descriptor) in tables.iter_mut().zip(descriptors) {
+            if descriptor.count != 0 && descriptor.size as usize != ENTRY_SIZE {
+                return Err(format!(
+                    "Unsupported MiniLoader entry size {}",
+                    descriptor.size
+                ));
+            }
+            *table = table_range(descriptor, HEADER_SIZE, payload_end)?;
         }
-
-        let tables = [
-            table_range(&header.entry_471, payload_end)?,
-            table_range(&header.entry_472, payload_end)?,
-            table_range(&header.entry_loader, payload_end)?,
-        ];
         for (index, first) in tables.iter().enumerate() {
             for second in &tables[index + 1..] {
                 if overlaps(first, second) {
@@ -343,6 +330,9 @@ impl Loader {
     }
 
     fn data(&self, entry: &RkBootEntry) -> &[u8] {
+        if entry.data_size == 0 {
+            return &[];
+        }
         let start = entry.data_offset as usize;
         &self.bytes[start..start + entry.data_size as usize]
     }
@@ -376,18 +366,61 @@ impl Loader {
     }
 }
 
-fn table_range(table: &RkBootHeaderEntry, payload_end: usize) -> Result<Range<usize>, String> {
-    if table.count == 0 {
-        return Ok(HEADER_SIZE..HEADER_SIZE);
+fn read_container(
+    file: &mut File,
+    offset: u64,
+    size: u64,
+) -> Result<(RkBootHeader, Vec<u8>), String> {
+    if !(HEADER_SIZE as u64 + 4..=MAX_LOADER_BYTES).contains(&size) {
+        return Err("MiniLoader size is outside the supported 106-byte to 64-MiB range".into());
     }
-    if table.size as usize != ENTRY_SIZE {
+    let end = offset
+        .checked_add(size)
+        .ok_or("MiniLoader file range overflows")?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| format!("Read loader size: {e}"))?
+        .len();
+    if end > file_len {
+        return Err("MiniLoader extends beyond the selected file".into());
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("Seek MiniLoader: {e}"))?;
+    let mut bytes = vec![0; size as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|e| format!("Read MiniLoader: {e}"))?;
+    let header = RkBootHeader::from_bytes(bytes[..HEADER_SIZE].try_into().unwrap())
+        .ok_or("MiniLoader must have a BOOT or LDR header")?;
+    let payload_end = bytes.len() - 4;
+    if !(HEADER_SIZE..=payload_end).contains(&(header.size as usize)) {
+        return Err(format!(
+            "Unsupported MiniLoader header size {}",
+            header.size
+        ));
+    }
+    let expected = u32::from_le_bytes(bytes[payload_end..].try_into().unwrap());
+    if rockchip_crc32(&bytes[..payload_end]) != expected {
+        return Err("MiniLoader CRC32 mismatch; select an intact loader or update.img".into());
+    }
+    Ok((header, bytes))
+}
+
+fn table_range(
+    table: &RkBootHeaderEntry,
+    header_size: usize,
+    payload_end: usize,
+) -> Result<Range<usize>, String> {
+    if table.count == 0 {
+        return Ok(header_size..header_size);
+    }
+    if (table.size as usize) < ENTRY_SIZE {
         return Err(format!("Unsupported MiniLoader entry size {}", table.size));
     }
     let start = table.offset as usize;
     let end = start
-        .checked_add(table.count as usize * ENTRY_SIZE)
+        .checked_add(table.count as usize * table.size as usize)
         .ok_or("MiniLoader table range overflows")?;
-    if start < HEADER_SIZE || end > payload_end {
+    if start < header_size || end > payload_end {
         return Err("MiniLoader entry table is outside its payload".into());
     }
     Ok(start..end)
@@ -409,20 +442,32 @@ fn read_entries(
         if entry.size as usize != ENTRY_SIZE || entry.type_ != expected_type {
             return Err("MiniLoader entry has an unsupported size or type".into());
         }
-        let start = entry.data_offset as usize;
-        let end = start
-            .checked_add(entry.data_size as usize)
-            .ok_or("MiniLoader data range overflows")?;
-        let range = start..end;
-        if start < HEADER_SIZE
-            || end > bytes.len() - 4
-            || tables.iter().any(|table| overlaps(&range, table))
-        {
-            return Err("MiniLoader entry data is outside its payload or overlaps metadata".into());
+        if entry.data_size != 0 {
+            entry_range(&entry, tables, HEADER_SIZE, bytes.len() - 4)?;
         }
         entries.push(entry);
     }
     Ok(entries)
+}
+
+fn entry_range(
+    entry: &RkBootEntry,
+    tables: &[Range<usize>],
+    header_size: usize,
+    payload_end: usize,
+) -> Result<Range<usize>, String> {
+    let start = entry.data_offset as usize;
+    let end = start
+        .checked_add(entry.data_size as usize)
+        .ok_or("MiniLoader data range overflows")?;
+    let range = start..end;
+    if start < header_size
+        || end > payload_end
+        || tables.iter().any(|table| overlaps(&range, table))
+    {
+        return Err("MiniLoader entry data is outside its payload or overlaps metadata".into());
+    }
+    Ok(range)
 }
 
 fn entry_name(entry: &RkBootEntry) -> Result<String, String> {

@@ -4,16 +4,26 @@ use nusb::transfer::{Buffer, Bulk, ControlOut, ControlType, In, Out, Recipient};
 use nusb::{DeviceInfo as UsbInfo, Endpoint, Interface};
 use rockusb::{
     operation::{self, OperationSteps, UsbStep},
-    protocol::{ChipInfo, FlashInfo, ResetOpcode},
+    protocol::{
+        COMMAND_BLOCK_BYTES, COMMAND_STATUS_BYTES, ChipInfo, CommandBlock, CommandStatus,
+        FlashInfo, ResetOpcode, Status,
+    },
 };
-use std::{collections::BTreeSet, sync::Mutex, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::File,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
-pub const CHUNK_BYTES: usize = 128 * 1024;
+const HANDOFF_WINDOW: Duration = Duration::from_secs(30);
+pub const CHUNK_BYTES: usize = 128 * 512;
 
 // A Loader can keep the same descriptors as Maskrom. Remember a successful
 // handshake only for that USB enumeration, not for the PID or physical port.
 static CONFIRMED_LOADERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+static PENDING_HANDOFFS: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
 
 #[derive(Clone)]
 pub struct Target {
@@ -62,8 +72,8 @@ pub async fn targets() -> Result<Vec<Target>, String> {
         // bcdUSB is only a hint: Rockchip's USB-PLUG deliberately keeps
         // 0x0200, unlike legacy Loader's 0x0201. Its standard gadget name
         // lets a fresh app discover it without probing a real Maskrom's
-        // bulk endpoints on every scan. Loader candidates are confirmed
-        // with a read-only ChipInfo request before displaying details.
+        // bulk endpoints on every scan. A recently downloaded Loader can
+        // also be recognized by a read-only LBA response on the same port.
         let mode =
             if usb.usb_version() & 1 != 0 || usb.product_string() == Some("USB download gadget") {
                 "loader"
@@ -108,12 +118,20 @@ impl Target {
     }
 }
 
-/// Confirm the RockUSB bulk protocol, including USB-PLUG with bcdUSB=0x0200.
-/// A failed or cancelled probe drops its entire session, cancelling any pending
-/// endpoint transfers before the next attempt opens a new claim.
-pub async fn probe_loader(target: &mut Target) -> Result<Session, String> {
-    let mut session = Session::open(target).await?;
-    let chip = session.chip_identity().await?;
+/// Record a successful RAM download without claiming the new Loader has booted.
+pub fn remember_handoff(target: &Target) {
+    if target.usb.port_chain().is_empty() {
+        return;
+    }
+    let now = Instant::now();
+    let mut pending = PENDING_HANDOFFS.lock().unwrap();
+    pending.retain(|_, expires| *expires > now);
+    pending.insert(target.port.clone(), now + HANDOFF_WINDOW);
+}
+
+/// Remember a bulk command that succeeded after the Maskrom handoff.
+pub fn mark_loader(target: &mut Target) {
+    PENDING_HANDOFFS.lock().unwrap().remove(&target.port);
     if target.info.mode == "maskrom" {
         CONFIRMED_LOADERS
             .lock()
@@ -121,9 +139,33 @@ pub async fn probe_loader(target: &mut Target) -> Result<Session, String> {
             .insert(target.info.id.clone());
     }
     target.info.mode = "loader".into();
-    target.info.chip = chip.raw;
-    target.info.chip_model = chip.model;
-    Ok(session)
+}
+
+pub async fn detect_handoff(target: &mut Target) {
+    if target.usb.port_chain().is_empty() {
+        return;
+    }
+    let pending = {
+        let now = Instant::now();
+        let mut pending = PENDING_HANDOFFS.lock().unwrap();
+        pending.retain(|_, expires| *expires > now);
+        pending.contains_key(&target.port)
+    };
+    if !pending {
+        return;
+    }
+    if target.info.mode == "loader" {
+        PENDING_HANDOFFS.lock().unwrap().remove(&target.port);
+        return;
+    }
+    let probe = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut session = Session::open(target).await?;
+        session.read(0, &mut [0; 512]).await
+    })
+    .await;
+    if matches!(probe, Ok(Ok(()))) {
+        mark_loader(target);
+    }
 }
 
 fn identity(d: &UsbInfo) -> String {
@@ -152,11 +194,6 @@ pub struct Session {
     interface: Interface,
     input: Endpoint<Bulk, In>,
     output: Endpoint<Bulk, Out>,
-}
-
-struct ChipIdentity {
-    raw: String,
-    model: Option<String>,
 }
 
 impl Session {
@@ -220,14 +257,10 @@ impl Session {
     where
         O: OperationSteps<T>,
     {
-        self.execute_with_reply_len_echo(op, None).await
+        self.execute_operation(op, false).await
     }
 
-    async fn execute_with_reply_len_echo<O, T>(
-        &mut self,
-        mut op: O,
-        reply_len_echo: Option<u32>,
-    ) -> Result<T, String>
+    async fn execute_operation<O, T>(&mut self, mut op: O, lba_transfer: bool) -> Result<T, String>
     where
         O: OperationSteps<T>,
     {
@@ -236,17 +269,15 @@ impl Session {
                 UsbStep::WriteBulk { data } => self.bulk_out(data).await?,
                 UsbStep::ReadBulk { data } => {
                     self.bulk_in(data).await?;
-                    // Some USB-PLUG loaders echo the big-endian reply length
-                    // in the CSW despite sending every byte. Only opt in for
-                    // known metadata reads; bulk_in enforces exact lengths and
-                    // rockusb still checks the CSW signature, tag and status.
-                    if data.len() == 13
-                        && &data[..4] == b"USBS"
-                        && data[8..12] != [0, 0, 0, 0]
-                        && !reply_len_echo
-                            .is_some_and(|len| data[8..12] == len.to_be_bytes() && data[12] == 0)
+                    // rkdeveloptool trusts the actual USB byte count and CSW
+                    // status, not the LBA residue field. rockusb otherwise
+                    // subtracts it from the already-checked transfer length.
+                    // LBA payloads are sector-sized, so this is only the CSW.
+                    if lba_transfer
+                        && data.len() == COMMAND_STATUS_BYTES
+                        && data.starts_with(b"USBS")
                     {
-                        return Err("设备返回不完整传输（CSW residue 非零）；操作已停止".into());
+                        data[8..12].fill(0);
                     }
                 }
                 UsbStep::WriteControl {
@@ -295,14 +326,7 @@ impl Session {
     }
 
     async fn bulk_in(&mut self, data: &mut [u8]) -> Result<(), String> {
-        let size = data.len().next_multiple_of(self.input.max_packet_size());
-        self.input.submit(Buffer::new(size));
-        let completion = tokio::time::timeout(TIMEOUT, self.input.next_complete())
-            .await
-            .map_err(|_| "USB 读取超时，操作已停止；请检查连接".to_string())?;
-        let buffer = completion
-            .into_result()
-            .map_err(|e| format!("USB 读取失败：{e}"))?;
+        let buffer = self.receive_bulk(data.len()).await?;
         if buffer.len() != data.len() {
             return Err(format!(
                 "USB 短读或多余响应：{}/{} 字节",
@@ -314,18 +338,41 @@ impl Session {
         Ok(())
     }
 
-    pub async fn flash_info(&mut self) -> Result<FlashInfo, String> {
-        self.execute_with_reply_len_echo(operation::flash_info(), Some(11))
+    async fn receive_bulk(&mut self, size: usize) -> Result<Buffer, String> {
+        self.input.submit(Buffer::new(
+            size.next_multiple_of(self.input.max_packet_size()),
+        ));
+        tokio::time::timeout(TIMEOUT, self.input.next_complete())
             .await
+            .map_err(|_| "USB 读取超时，操作已停止；请检查连接".to_string())?
+            .into_result()
+            .map_err(|e| format!("USB 读取失败：{e}"))
+    }
+
+    pub async fn flash_info(&mut self) -> Result<FlashInfo, String> {
+        // rkdeveloptool advertises 11 bytes in the CBW but accepts a FlashInfo
+        // reply up to 512 bytes. Only its fixed 11-byte prefix is interpreted.
+        let command = CommandBlock::flash_info();
+        let mut cbw = [0; COMMAND_BLOCK_BYTES];
+        command.to_bytes(&mut cbw);
+        self.bulk_out(&cbw).await?;
+        let reply = self.receive_bulk(512).await?;
+        if !(11..=512).contains(&reply.len()) {
+            return Err(format!("FlashInfo 响应长度无效：{} 字节", reply.len()));
+        }
+        let mut csw = [0; COMMAND_STATUS_BYTES];
+        self.bulk_in(&mut csw).await?;
+        let status =
+            CommandStatus::from_bytes(&csw).map_err(|e| format!("FlashInfo 响应状态无效：{e}"))?;
+        if status.tag != command.tag() || status.status != Status::SUCCESS {
+            return Err("FlashInfo 响应标签不匹配或命令失败".into());
+        }
+        Ok(FlashInfo::from_bytes(reply[..11].try_into().unwrap()))
     }
     pub async fn chip_info(&mut self) -> Result<ChipInfo, String> {
-        self.execute_with_reply_len_echo(operation::chip_info(), Some(16))
-            .await
+        self.execute(operation::chip_info()).await
     }
-    pub async fn chip_id(&mut self) -> Result<String, String> {
-        Ok(self.chip_identity().await?.raw)
-    }
-    async fn chip_identity(&mut self) -> Result<ChipIdentity, String> {
+    pub async fn describe_chip(&mut self, target: &mut Target) -> Result<(), String> {
         let chip = self.chip_info().await?;
         let data = chip.inner();
         let raw = format!(
@@ -335,10 +382,9 @@ impl Session {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        Ok(ChipIdentity {
-            raw,
-            model: chip_model(data).map(str::to_owned),
-        })
+        target.info.chip = raw;
+        target.info.chip_model = chip_model(data).map(str::to_owned);
+        Ok(())
     }
     pub async fn capacity(&mut self) -> Result<u64, String> {
         let sectors = u64::from(self.flash_info().await?.sectors());
@@ -347,26 +393,33 @@ impl Session {
         }
         Ok(sectors)
     }
+    pub async fn idb_write(
+        &mut self,
+        file: &mut File,
+        offset: u64,
+        size: u64,
+    ) -> Result<crate::loader::IdbWrite, String> {
+        let loader = crate::loader::PersistentLoader::read(file, offset, size)?;
+        let write = loader.idb_write()?;
+        // Like rkdeveloptool ul, only FlashHead needs the new-IDB capability.
+        if loader.has_flash_head()? && !self.execute(operation::capability()).await?.new_idb() {
+            return Err(
+                "MiniLoader contains FlashHead, but the device does not support the new IDB format"
+                    .into(),
+            );
+        }
+        Ok(write)
+    }
     pub async fn read(&mut self, sector: u64, data: &mut [u8]) -> Result<(), String> {
         check_transfer(sector, data.len())?;
-        let count: u32 = self
-            .execute(operation::read_lba(sector as u32, data))
-            .await?
-            .into();
-        if count as usize != data.len() {
-            return Err("设备未完整读取请求范围".into());
-        }
+        self.execute_operation(operation::read_lba(sector as u32, data), true)
+            .await?;
         Ok(())
     }
     pub async fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), String> {
         check_transfer(sector, data.len())?;
-        let count: u32 = self
-            .execute(operation::write_lba(sector as u32, data))
-            .await?
-            .into();
-        if count as usize != data.len() {
-            return Err("设备未完整写入请求范围".into());
-        }
+        self.execute_operation(operation::write_lba(sector as u32, data), true)
+            .await?;
         Ok(())
     }
     pub async fn erase(&mut self, sector: u64, sectors: u16) -> Result<(), String> {
@@ -427,39 +480,16 @@ fn check_transfer(sector: u64, bytes: usize) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn partitions(
+pub async fn primary_partitions(
     session: &mut Session,
-    capacity: u64,
-) -> Result<Vec<crate::model::PartitionInfo>, String> {
-    let mut header = vec![0; 512];
-    session.read(1, &mut header).await?;
-    let plan = crate::gpt::read_plan(&header, capacity)?;
-    let mut entries = vec![0; plan.table_bytes.next_multiple_of(512)];
-    for (i, chunk) in entries.chunks_mut(CHUNK_BYTES).enumerate() {
-        session
-            .read(plan.table_lba + (i * CHUNK_BYTES / 512) as u64, chunk)
-            .await?;
-    }
-    let mut backup_header = vec![0; 512];
-    session
-        .read(plan.backup_header_lba, &mut backup_header)
-        .await?;
-    let (backup_lba, backup_bytes) =
-        crate::gpt::backup_table_spec(&header, &backup_header, capacity)?;
-    let mut backup_entries = vec![0; backup_bytes.next_multiple_of(512)];
-    for (i, chunk) in backup_entries.chunks_mut(CHUNK_BYTES).enumerate() {
-        session
-            .read(backup_lba + (i * CHUNK_BYTES / 512) as u64, chunk)
-            .await?;
-    }
-    let partitions =
-        crate::gpt::parse_verified(&header, &entries, &backup_header, &backup_entries, capacity)?;
-    if plan.backup_is_not_at_device_end {
-        eprintln!(
-            "GPT image ends at LBA {}, before device end {}; verified read-only, no GPT relocation or partition expansion performed",
-            plan.backup_header_lba,
-            capacity - 1
-        );
-    }
-    Ok(partitions)
+) -> Result<Option<Vec<crate::model::PartitionInfo>>, String> {
+    let mut metadata = [0; crate::gpt::DEVICE_PRIMARY_BYTES];
+    session.read(0, &mut metadata).await?;
+    crate::gpt::parse_device_primary(&metadata)
+}
+
+pub async fn partitions(session: &mut Session) -> Result<Vec<crate::model::PartitionInfo>, String> {
+    primary_partitions(session)
+        .await?
+        .ok_or_else(|| "No primary GPT signature at LBA 1".into())
 }

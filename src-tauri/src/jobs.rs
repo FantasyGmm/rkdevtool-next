@@ -66,10 +66,11 @@ fn validate_partition_target(
     sectors: Option<u64>,
     partitions: &[PartitionInfo],
 ) -> Result<(), String> {
-    let partition = partitions
-        .iter()
-        .find(|p| p.name == name)
-        .ok_or("所选分区已不存在，请重新读取分区表")?;
+    let mut named = partitions.iter().filter(|p| p.name == name);
+    let partition = named.next().ok_or("所选分区已不存在，请重新读取分区表")?;
+    if named.next().is_some() {
+        return Err("分区名称不唯一；未执行操作".into());
+    }
     if partition.start_sector != start || Some(partition.sectors) != sectors {
         return Err("分区布局已改变；未执行操作，请重新读取并确认分区".into());
     }
@@ -165,7 +166,8 @@ pub async fn prepare(request: OperationRequest) -> Result<Prepared, String> {
             return Err("压缩包中不存在所选镜像，请重新选择".into());
         }
     }
-    let target = usb::resolve(&request.device_id).await?;
+    let mut target = usb::resolve(&request.device_id).await?;
+    usb::detect_handoff(&mut target).await;
     let image = if !is_batch
         && request.archive_member.is_none()
         && matches!(request.kind, OperationKind::Flash | OperationKind::Loader)
@@ -284,8 +286,23 @@ pub async fn prepare(request: OperationRequest) -> Result<Prepared, String> {
     }
     if let Some(name) = &request.partition_name {
         let capacity = capacity.ok_or("分区操作需要 Loader 模式和有效容量")?;
-        let partitions = usb::partitions(&mut session, capacity).await?;
+        let partitions = usb::partitions(&mut session).await?;
         validate_partition_target(name, request.start_sector, request.sectors, &partitions)?;
+        if matches!(request.kind, OperationKind::Flash | OperationKind::Erase) {
+            let sectors = request.sectors.ok_or("缺少分区长度")?;
+            let start = request.start_sector;
+            checked_range(start, sectors, capacity)?;
+            let end = start + sectors;
+            if start < crate::gpt::DEVICE_PRIMARY_BYTES as u64 / 512
+                || partitions.iter().any(|part| {
+                    part.name != *name
+                        && part.start_sector < end
+                        && part.start_sector.saturating_add(part.sectors) > start
+                })
+            {
+                return Err("分区目标与主 GPT 或其他分区重叠；未进行写入".into());
+            }
+        }
     }
     let mut prepared_writes = Vec::new();
     if let Some(writes) = &request.writes {
@@ -391,7 +408,7 @@ pub(crate) fn launch_task(
         }
         let (status, message, level) = match result {
             Ok(Ok(())) => ("completed", match prepared.request.kind {
-                OperationKind::Loader => "Loader 已载入 RAM，设备已进入 Loader 模式".to_string(),
+                OperationKind::Loader => "Loader RAM 下载完成".to_string(),
                 OperationKind::Backup => "备份完成，文件已同步保存".to_string(),
                 OperationKind::Erase => format!("擦除完成：{}", prepared.erase_target()),
                 _ => "操作完成".to_string(),
@@ -668,17 +685,20 @@ impl Prepared {
             }
             OperationKind::Loader => {
                 let size = self.image.as_ref().ok_or("缺少 Loader")?.info.size;
-                let blobs =
-                    loader::ram_blobs(self.source.as_mut().ok_or("缺少 Loader 文件")?, 0, size)?;
-                let total = blobs.iter().map(|b| b.data.len() as u64).sum();
+                let loader = loader::RamLoader::read(
+                    self.source.as_mut().ok_or("缺少 Loader 文件")?,
+                    0,
+                    size,
+                )?;
+                let total = loader.blobs().map(|b| b.data.len() as u64).sum();
                 report.phase("loading-loader", "正在向 RAM 下载 Loader", total, 0.0, 95.0);
                 upload_loader(
                     self.session.as_mut().ok_or("USB 会话已关闭")?,
-                    blobs,
+                    &loader,
                     report,
                 )
                 .await?;
-                self.reconnect(report).await?;
+                usb::remember_handoff(&self.target);
             }
             OperationKind::Backup => self.backup(report).await?,
             OperationKind::Erase => {
@@ -752,10 +772,10 @@ impl Prepared {
         Ok(())
     }
 
-    async fn reconnect(&mut self, report: &mut Reporter) -> Result<(), String> {
+    async fn reconnect(&mut self, report: &mut Reporter) -> Result<u64, String> {
         report.label(
             "reconnecting",
-            "正在等待同一 USB 端口的 Loader，并读取芯片信息确认",
+            "正在等待同一 USB 端口的 Loader，并读取烧录所需容量",
         );
         // Drop the old claim before opening the re-enumerated interface. The
         // loader may retain its enumeration identity on some boards.
@@ -776,7 +796,13 @@ impl Prepared {
                 // PID, serial strings and bcdUSB may change (or stay the same)
                 // when BootROM hands off to firmware. Keep the physical port
                 // constraint and require a valid read-only protocol response.
-                .filter(|d| d.port == self.target.port)
+                .filter(|d| {
+                    if self.target.usb.port_chain().is_empty() {
+                        d.info.id == self.target.info.id
+                    } else {
+                        d.port == self.target.port
+                    }
+                })
                 .collect();
             if matches.len() > 1 {
                 return Err("重枚举设备身份不唯一；未继续写入".into());
@@ -786,7 +812,7 @@ impl Prepared {
                 if last_seen.as_ref() != Some(&description) {
                     report.label(
                         "reconnecting",
-                        &format!("检测到 {description}；正在读取芯片信息"),
+                        &format!("检测到 {description}；正在读取容量"),
                     );
                     last_seen = Some(description.clone());
                 }
@@ -794,20 +820,25 @@ impl Prepared {
                 // timed-out probe also drops its claim and pending transfers.
                 let probe = tokio::time::timeout(
                     Duration::from_secs(2).min(deadline.saturating_duration_since(Instant::now())),
-                    usb::probe_loader(&mut target),
+                    async {
+                        let mut session = Session::open(&target).await?;
+                        let capacity = session.capacity().await?;
+                        Ok::<_, String>((session, capacity))
+                    },
                 )
                 .await
-                .unwrap_or_else(|_| Err("读取 Loader 芯片信息超时".into()));
+                .unwrap_or_else(|_| Err("读取 Loader 容量超时".into()));
                 match probe {
-                    Ok(session) => {
+                    Ok((session, capacity)) => {
                         report.check()?;
+                        usb::mark_loader(&mut target);
                         report.label(
                             "reconnecting",
-                            &format!("Loader 已响应：{description} · {}", target.info.chip),
+                            &format!("Loader 已响应：{description} · {capacity} 扇区"),
                         );
                         self.session = Some(session);
                         self.target = target;
-                        return Ok(());
+                        return Ok(capacity);
                     }
                     Err(error) => last_error = format!("{description}；{error}"),
                 }
@@ -843,11 +874,14 @@ impl Prepared {
         )?;
         report.check()?;
         self.source_unchanged()?;
-        if self.target.info.mode == "maskrom" {
+        let capacity = if self.target.info.mode == "maskrom" {
             let offset = package.loader_offset.ok_or("升级包没有可用的内置 Loader")?;
-            let blobs =
-                loader::ram_blobs(self.source.as_mut().unwrap(), offset, package.loader_size)?;
-            let total = blobs.iter().map(|b| b.data.len() as u64).sum();
+            let loader = loader::RamLoader::read(
+                self.source.as_mut().ok_or("缺少升级包文件")?,
+                offset,
+                package.loader_size,
+            )?;
+            let total = loader.blobs().map(|b| b.data.len() as u64).sum();
             report.phase(
                 "loading-loader",
                 "正在向 RAM 下载内置 Loader",
@@ -857,25 +891,17 @@ impl Prepared {
             );
             upload_loader(
                 self.session.as_mut().ok_or("USB 会话已关闭")?,
-                blobs,
+                &loader,
                 report,
             )
             .await?;
-            self.reconnect(report).await?;
-        }
+            usb::remember_handoff(&self.target);
+            self.reconnect(report).await?
+        } else {
+            self.capacity.ok_or("未读取设备容量")?
+        };
         // Resolve the full persistent plan before changing any flash sector.
         report.check()?;
-        self.session
-            .as_mut()
-            .ok_or("USB 会话已关闭")?
-            .chip_id()
-            .await?;
-        let capacity = self
-            .session
-            .as_mut()
-            .ok_or("USB 会话已关闭")?
-            .capacity()
-            .await?;
         self.capacity = Some(capacity);
         let package = self
             .image
@@ -902,34 +928,22 @@ impl Prepared {
                 "完整升级包的 IDB 持久化目前仅支持 eMMC/SD，当前介质为 {storage}；未修改设备"
             ));
         }
-        let new_idb = self
+        let idb = self
             .session
             .as_mut()
             .ok_or("USB 会话已关闭")?
-            .execute(operation::capability())
-            .await?
-            .new_idb();
-        let idb = loader::idb_writes(
-            self.source.as_mut().unwrap(),
-            idb_range.0,
-            idb_range.1,
-            new_idb,
-        )?;
-        if idb.is_empty() {
-            return Err("MiniLoader 没有生成可写的 IDB".into());
-        }
-        for write in &idb {
-            checked_range(write.sector, write.data.len() as u64 / 512, capacity)?;
-            let end = write.sector + write.data.len() as u64 / 512;
-            if disk
-                .partitions
-                .iter()
-                .any(|p| write.sector < p.start_sector + p.sectors && p.start_sector < end)
-                || write.sector < 34
-                || end > capacity - 33
-            {
-                return Err("IDB 区域与 GPT/数据分区冲突；未修改设备".into());
-            }
+            .idb_write(self.source.as_mut().unwrap(), idb_range.0, idb_range.1)
+            .await?;
+        checked_range(idb.sector, idb.data.len() as u64 / 512, capacity)?;
+        let idb_end = idb.sector + idb.data.len() as u64 / 512;
+        if disk
+            .partitions
+            .iter()
+            .any(|p| idb.sector < p.start_sector + p.sectors && p.start_sector < idb_end)
+            || idb.sector < 34
+            || idb_end > capacity - 33
+        {
+            return Err("IDB 区域与 GPT/数据分区冲突；未修改设备".into());
         }
         for part in package.parts.iter().filter(|p| p.name != "bootloader") {
             let dest = disk
@@ -947,8 +961,7 @@ impl Prepared {
             }
         }
         self.source_unchanged()?;
-        let metadata_bytes = (disk.primary.len() + disk.backup.len()) as u64
-            + idb.iter().map(|w| w.data.len() as u64).sum::<u64>();
+        let metadata_bytes = (disk.primary.len() + disk.backup.len() + idb.data.len()) as u64;
         let payload_bytes = package
             .parts
             .iter()
@@ -979,15 +992,13 @@ impl Prepared {
         )
         .await?;
         report.label("writing-idb", "正在持久化 MiniLoader 到 IDB 引导区");
-        for write in idb {
-            write_memory(
-                self.session.as_mut().ok_or("USB 会话已关闭")?,
-                write.sector,
-                &write.data,
-                report,
-            )
-            .await?;
-        }
+        write_memory(
+            self.session.as_mut().ok_or("USB 会话已关闭")?,
+            idb.sector,
+            &idb.data,
+            report,
+        )
+        .await?;
         for part in package.parts.iter().filter(|p| p.name != "bootloader") {
             report.label("writing", &format!("正在写入分区 {}", part.name));
             let start = part.start_sector.ok_or("分区缺少写入地址")?;
@@ -1065,12 +1076,12 @@ impl Prepared {
 
 async fn upload_loader(
     session: &mut Session,
-    blobs: Vec<loader::LoaderBlob>,
+    loader: &loader::RamLoader,
     report: &mut Reporter,
 ) -> Result<(), String> {
     // Cancellation happens between complete boot entries, never in the middle
     // of a control-transfer stream (which would leave an invalid RAM loader).
-    for blob in blobs {
+    for blob in loader.blobs() {
         report.check()?;
         report.label(
             "loading-loader",
@@ -1082,8 +1093,9 @@ async fn upload_loader(
             ),
         );
         session
-            .execute(operation::write_area(blob.area, &blob.data))
-            .await?;
+            .execute(operation::write_area(blob.area, blob.data))
+            .await
+            .map_err(|e| format!("RAM 条目 0x{:03x} 下载失败：{e}", blob.area))?;
         report.advance(blob.data.len() as u64);
         if blob.delay_ms > 0 {
             // This complete entry is a safe cancellation boundary, unlike
@@ -1099,6 +1111,8 @@ async fn upload_loader(
             }
         }
     }
+    // rkdeveloptool DownloadBoot waits one second after the last RAM entry.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     Ok(())
 }
 

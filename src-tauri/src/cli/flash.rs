@@ -126,12 +126,16 @@ async fn flash(
                 Target::Package => (0, None, None, "full RKFW/RKAF package".into()),
                 Target::StartSector(lba) => (*lba, None, None, format!("RAW image at LBA {lba}")),
                 Target::Partition(name) => {
-                    // The verified GPT reader rejects duplicate names.
-                    let partition = crate::partitions(&backend, &device_id)
+                    let mut matches = crate::partitions(&backend, &device_id)
                         .await?
                         .into_iter()
-                        .find(|partition| partition.name == name.as_str())
+                        .filter(|partition| partition.name == name.as_str());
+                    let partition = matches
+                        .next()
                         .ok_or_else(|| format!("No GPT partition named {name:?}"))?;
+                    if matches.next().is_some() {
+                        return Err(format!("Ambiguous GPT partition name {name:?}"));
+                    }
                     (
                         partition.start_sector,
                         Some(partition.sectors),

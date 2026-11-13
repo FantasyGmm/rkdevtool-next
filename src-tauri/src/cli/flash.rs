@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const HELP: &str = "Usage: rkdevtool-next-cli flash FILE --device ID --allow-flash
+const HELP: &str = "Usage: rkdevcli flash FILE --device ID --allow-flash
        [--start-sector LBA | --partition NAME] [--reboot]
 
 Without a range selector, flash requires an RKFW/RKAF firmware package.

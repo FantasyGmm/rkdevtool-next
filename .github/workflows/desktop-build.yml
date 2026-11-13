@@ -114,15 +114,15 @@ jobs:
           - platform: macos-arm64
             runner: macos-15
             target: aarch64-apple-darwin
-            binary: rkdevtool-next-cli
+            binary: rkdevcli
           - platform: windows-x64
             runner: windows-2022
             target: x86_64-pc-windows-msvc
-            binary: rkdevtool-next-cli.exe
+            binary: rkdevcli.exe
           - platform: linux-x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            binary: rkdevtool-next-cli
+            binary: rkdevcli
     defaults:
       run:
         shell: bash
@@ -142,10 +142,10 @@ jobs:
           CLI_BINARY: ${{ matrix.binary }}
         run: |
           cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
-            --target "$BUILD_TARGET" --no-default-features --features headless-cli --bin rkdevtool-next-cli
+            --target "$BUILD_TARGET" --no-default-features --features headless-cli --bin rkdevcli
           version="$(node -p 'require("./package.json").version')"
           binary="src-tauri/target/$BUILD_TARGET/release/$CLI_BINARY"
-          [[ "$("$binary" --version | tr -d '\r')" == "rkdevtool-next-cli $version" ]]
+          [[ "$("$binary" --version | tr -d '\r')" == "rkdevcli $version" ]]
           "$binary" serve --help
       - name: Package macOS or Linux CLI
         if: runner.os != 'Windows'
@@ -217,7 +217,7 @@ jobs:
           - **macos-arm64.dmg**：Apple Silicon（M 系列）Mac
           - **windows-x64-setup.exe**：Windows x64 安装程序
           - **linux-x64.deb / linux-x64.AppImage**：Linux x86_64 桌面版；Debian 系可选 `.deb`，免安装可选 `.AppImage`。USB 访问需配置本机 udev 权限。
-          - **RKDevTool-Next-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。无需 GUI，可运行本机 MCP；烧录需显式启用 `--allow-flash`。
+          - **RKDevTool-Next-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。入口已更名为 `rkdevcli`（Windows 为 `rkdevcli.exe`）；升级时请更新脚本和 MCP 启动命令。无需 GUI；烧录需显式启用 `--allow-flash`。
 
           macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包尚未配置代码签名，系统可能显示安全提示。Windows USB 通信需要目标 Rockusb 接口使用 WinUSB。
 

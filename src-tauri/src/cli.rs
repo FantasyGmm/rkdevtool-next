@@ -13,7 +13,7 @@ use std::{
     },
 };
 
-const HELP: &str = "rkdevtool-next-cli [--help | --version]
+const HELP: &str = "rkdevcli [--help | --version]
   scan                          List RockUSB devices as JSON
   inspect FILE                  Inspect a firmware image or archive as JSON
   unpack FILE OUTPUT_DIR        Extract RKFW/RKAF into a new child directory
@@ -68,7 +68,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
             Ok(())
         }
         Some("flash") => flash::run(args),
-        Some("maintenance") => maintenance::run(args),
+        Some("maintenance") => maintenance::run_as("rkdevcli maintenance", args),
         Some("serve") => {
             let mut directory = None;
             let mut allow_flash = false;
@@ -99,7 +99,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
                 .block_on(mcp::serve_headless(directory, allow_flash))
         }
         Some("--version" | "-V") if args.next().is_none() => {
-            println!("rkdevtool-next-cli {}", env!("CARGO_PKG_VERSION"));
+            println!("rkdevcli {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Some("--help" | "-h") | None if args.next().is_none() => {
@@ -119,18 +119,18 @@ fn positional<const N: usize>(
         .map(|arg| arg.into_string().map_err(|_| "Arguments must be UTF-8"))
         .collect::<Result<Vec<_>, _>>()?;
     if matches!(args.as_slice(), [arg] if arg == "--help" || arg == "-h") {
-        println!("rkdevtool-next-cli {usage}\n\n{description}");
+        println!("rkdevcli {usage}\n\n{description}");
         return Ok(None);
     }
     if args
         .iter()
         .any(|arg| arg.is_empty() || arg.starts_with('-'))
     {
-        return Err(format!("Usage: rkdevtool-next-cli {usage}"));
+        return Err(format!("Usage: rkdevcli {usage}"));
     }
     args.try_into()
         .map(Some)
-        .map_err(|_| format!("Usage: rkdevtool-next-cli {usage}"))
+        .map_err(|_| format!("Usage: rkdevcli {usage}"))
 }
 
 fn run_async<T>(future: impl Future<Output = Result<T, String>>) -> Result<T, String> {

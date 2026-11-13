@@ -77,25 +77,28 @@ xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
 
 ## 直接使用 CLI
 
-从 Release 下载并解压 `RKDevTool-Next-CLI`，在解压目录运行。无需启动桌面或 MCP：
+从 Release 下载并解压 `RKDevTool-Next-CLI` 后，在解压目录运行 `rkdevcli`，无需启动桌面或 MCP。下例使用 Bash；Windows PowerShell 的入口是 `.\rkdevcli.exe`。
 
 ```bash
-./rkdevtool-next-cli scan
-./rkdevtool-next-cli inspect update.img
-./rkdevtool-next-cli unpack update.img ./output
+./rkdevcli scan
+./rkdevcli inspect update.img
+mkdir -p ./output
+./rkdevcli unpack update.img ./output
 ```
 
 `scan` 将设备列表输出为 JSON。`inspect` 不访问 USB，将 RKFW/RKAF、RAW、MiniLoader 或 ZIP/gzip/xz/bzip2 中可用的镜像信息输出为 JSON。`unpack` 只解包 RKFW/RKAF：在已存在的 `./output` 下新建子目录，不覆盖文件，并输出新目录路径。
+
+从 v0.1.9 升级时，将脚本、快捷方式和 MCP 启动命令里的 `rkdevtool-next-cli` 改为 `rkdevcli`。命令参数和已生成的 MCP 客户端配置不变。
 
 烧录前，退出桌面应用和其他烧录工具，从 `scan` 输出取目标设备的 `id`。核对设备与固件并备份后，显式加 `--allow-flash`：
 
 ```bash
 device_id='从 scan 结果复制的 id'
 # RKFW/RKAF 整包：按包内布局写入
-./rkdevtool-next-cli flash update.img --device "$device_id" --allow-flash
+./rkdevcli flash update.img --device "$device_id" --allow-flash
 # RAW：明确指定起始 LBA（512 字节扇区）或 GPT 分区名
-./rkdevtool-next-cli flash disk.img --device "$device_id" --start-sector 0 --allow-flash
-./rkdevtool-next-cli flash boot.img --device "$device_id" --partition boot --allow-flash
+./rkdevcli flash disk.img --device "$device_id" --start-sector 0 --allow-flash
+./rkdevcli flash boot.img --device "$device_id" --partition boot --allow-flash
 ```
 
 RAW 和独立 RKAF 需要设备已进入 Loader；直接烧录压缩包前须先提取镜像。只有加 `--reboot` 才会在成功后重启。按 Ctrl+C 会请求在安全边界停止，已写入的数据不会回滚；请等命令退出再断开设备。
@@ -148,7 +151,7 @@ npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
 从 Release 下载并解压对应平台的 CLI。退出桌面版和其他可能占用 USB 的烧录工具，在运行 MCP 客户端的同一台电脑上执行：
 
 ```bash
-./rkdevtool-next-cli serve --state-dir ./rkdevtool-headless
+./rkdevcli serve --state-dir ./rkdevtool-headless
 ```
 
 默认只读。需要无人值守烧录时，停止服务，再在启动命令后加 `--allow-flash`。这只放开烧录（包括请求的烧录后重启）；烧录会覆盖数据，请先备份。全权限无人值守仅在桌面版提供，擦除等其他写操作不会从 CLI 的 MCP 执行。服务只监听 `127.0.0.1:38471`，启动时打印配置文件路径，沿用上面的客户端接入方式；密钥不会打印。使用独立的私有状态目录，不与桌面版共享。按 Ctrl+C 停止接收新请求；正在烧录时，CLI 会等到任务结束再退出。
@@ -157,7 +160,7 @@ npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
 
 ```bash
 cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
-  --no-default-features --features headless-cli --bin rkdevtool-next-cli
+  --no-default-features --features headless-cli --bin rkdevcli
 ```
 
 ## 适用范围
@@ -171,7 +174,7 @@ cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
 
 ## 独立维护命令（实验性）
 
-维护命令用 Rust 和项目现有 RockUSB 后端实现，不调用外部烧录工具，也不接入 UI 或 MCP。发布的 CLI 用 `rkdevtool-next-cli maintenance --help` 查看这些命令。使用 USB 命令前关闭桌面应用并停止 MCP 服务，只连接一台 Loader 或 Maskrom 设备；具体命令仍受当前启动状态支持能力限制。可先运行只读的 `ppt`、`rl`；写设备必须显式传入 `--allow-device-write`。
+维护命令用 Rust 和项目现有 RockUSB 后端实现，不调用外部烧录工具，也不接入 UI 或 MCP。发布的 CLI 用 `rkdevcli maintenance --help` 查看这些命令。使用 USB 命令前关闭桌面应用并停止 MCP 服务，只连接一台 Loader 或 Maskrom 设备；具体命令仍受当前启动状态支持能力限制。可先运行只读的 `ppt`、`rl`；写设备必须显式传入 `--allow-device-write`。
 
 ```bash
 cargo run --locked --manifest-path src-tauri/Cargo.toml --no-default-features \

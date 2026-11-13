@@ -4,7 +4,7 @@ fn main() -> ExitCode {
     match rkdevtool_next_lib::cli::run(std::env::args_os().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("rkdevtool-next-cli: {error}");
+            eprintln!("rkdevcli: {error}");
             ExitCode::FAILURE
         }
     }

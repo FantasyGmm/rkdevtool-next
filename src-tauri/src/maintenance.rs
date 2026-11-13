@@ -20,7 +20,7 @@ const ROCKUSB_SECTORS: u64 = u32::MAX as u64 + 1;
 const PARAM_LBA: u64 = 8192;
 const PARAM_SECTORS: u64 = 512;
 
-const HELP: &str = "rkdevtool-maintenance [--allow-device-write] COMMAND
+const HELP: &str = "[--allow-device-write] COMMAND
 
   ppt                        List partitions from the primary GPT or legacy parameter
   rl LBA SECTORS OUT         Read an exact device range into a new file
@@ -37,6 +37,13 @@ All device writes require --allow-device-write. Close the desktop application
 and connect exactly one device in Loader or Maskrom mode.";
 
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
+    run_as("rkdevtool-maintenance", arguments)
+}
+
+pub(crate) fn run_as(
+    program: &str,
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<(), String> {
     let mut args = arguments.into_iter().peekable();
     let allow_write = args.peek().is_some_and(|arg| arg == "--allow-device-write");
     if allow_write {
@@ -49,7 +56,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
         args.as_slice(),
     ) {
         (None | Some("--help" | "-h"), []) => {
-            println!("{HELP}");
+            println!("{program} {HELP}");
             Ok(())
         }
         (Some("pack"), [template, directory, output]) => {
@@ -158,7 +165,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
             require_write(allow_write)?;
             device_task(write_loader(Path::new(path)))
         }
-        _ => Err(format!("Invalid command or arguments.\n\n{HELP}")),
+        _ => Err(format!("Invalid command or arguments.\n\n{program} {HELP}")),
     }
 }
 

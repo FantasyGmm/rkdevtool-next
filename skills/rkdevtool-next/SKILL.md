@@ -1,13 +1,13 @@
 ---
 name: rkdevtool-next
-description: Connect to the local RKDevTool Next desktop app over MCP to inspect Rockchip hardware and firmware, back up partitions, or carry out user-requested flashing and recovery.
+description: Connect to RKDevTool Next over local MCP from the desktop app or rkdevcli to inspect Rockchip hardware and firmware, flash, or use desktop recovery tools.
 ---
 
 # RKDevTool Next
 
 ## Connect and verify
 
-1. Run the desktop app or `rkdevtool-next-cli serve` on the same computer as the MCP client. Use the connection address and local configuration path included below or printed by the CLI. For desktop, the user can copy these from **Preferences → MCP Server**.
+1. Run the desktop app or `rkdevcli serve --state-dir <private-directory>` on the same computer as the MCP client. Use the connection address and local configuration path included below or printed by the CLI. For desktop, the user can copy these from **Preferences → MCP Server**.
 2. Use the registered tools if available, or import the generated JSON with a client that supports it (e.g. `claude --mcp-config <file>`). If Codex desktop has not registered the server, call it from a terminal on the same computer with MCPorter 0.17.0 (Node.js 24+):
 
    ```bash

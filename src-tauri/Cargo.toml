@@ -19,8 +19,8 @@ path = "src/main.rs"
 required-features = ["desktop"]
 
 [[bin]]
-name = "rkdevtool-next-cli"
-path = "src/bin/rkdevtool-next-cli.rs"
+name = "rkdevcli"
+path = "src/bin/rkdevcli.rs"
 required-features = ["headless-cli"]
 
 [[bin]]

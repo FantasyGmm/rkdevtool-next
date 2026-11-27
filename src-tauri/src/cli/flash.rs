@@ -104,7 +104,7 @@ async fn flash(
     reboot: bool,
 ) -> Result<(), String> {
     let mut temporary = tempfile::Builder::new();
-    temporary.prefix("rkdevtool-flash-");
+    temporary.prefix("rkdevsuit-flash-");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

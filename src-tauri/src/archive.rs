@@ -260,7 +260,7 @@ pub fn extract_selected(
     }
     file.seek(SeekFrom::Start(0)).map_err(err)?;
     let directory = tempfile::Builder::new()
-        .prefix("rkdevtool-next-image-")
+        .prefix("rkdevsuit-image-")
         .tempdir()
         .map_err(err)?;
     let target = directory.path().join("firmware.img");

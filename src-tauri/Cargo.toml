@@ -1,6 +1,6 @@
 [package]
-name = "rkdevtool-next"
-default-run = "rkdevtool-next"
+name = "rkdevsuit"
+default-run = "rkdevsuit"
 version = "0.1.9"
 description = "Native cross-platform Rockchip flashing tool"
 edition = "2024"
@@ -14,7 +14,7 @@ headless-cli = ["maintenance-cli", "tokio/signal"]
 maintenance-cli = ["dep:crc32fast"]
 
 [[bin]]
-name = "rkdevtool-next"
+name = "rkdevsuit"
 path = "src/main.rs"
 required-features = ["desktop"]
 
@@ -29,7 +29,7 @@ path = "src/bin/rkdevtool-maintenance.rs"
 required-features = ["maintenance-cli"]
 
 [lib]
-name = "rkdevtool_next_lib"
+name = "rkdevsuit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

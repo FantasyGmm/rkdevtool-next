@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="public/icon.png" width="96" alt="RKDevTool Next logo" />
+  <img src="public/icon.png" width="96" alt="RKDevSuit logo" />
 </p>
 
-<h1 align="center">RKDevTool Next</h1>
+<h1 align="center">RKDevSuit</h1>
 
 <p align="center">面向 Rockchip 开发板的原生烧录工作台</p>
 <p align="center">
@@ -11,7 +11,7 @@
   <a href="https://github.com/FantasyGmm/rkdevtool-next/issues">反馈问题</a>
 </p>
 
-RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
+RKDevSuit 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
 
 ## 界面预览
 
@@ -19,15 +19,15 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 
 ### 烧录
 
-![RKDevTool Next 烧录页面，展示固件选择、设备详情和运行日志](docs/images/flash.jpg)
+![RKDevSuit 烧录页面，展示固件选择、设备详情和运行日志](docs/images/flash.jpg)
 
 ### 分区
 
-![RKDevTool Next 分区页面，展示分区列表和分区操作](docs/images/partitions.jpg)
+![RKDevSuit 分区页面，展示分区列表和分区操作](docs/images/partitions.jpg)
 
 ### 高级工具
 
-![RKDevTool Next 高级工具页面，展示设备管理和存储操作](docs/images/advanced.jpg)
+![RKDevSuit 高级工具页面，展示设备管理和存储操作](docs/images/advanced.jpg)
 
 ## 下载与安装
 
@@ -35,16 +35,16 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 
 | 平台 | 文件 | 安装方式 |
 | --- | --- | --- |
-| macOS Apple Silicon（M 系列，macOS 11+） | `RKDevTool-Next_*_macos-arm64.dmg` | 打开 DMG，将 RKDevTool Next 拖入「应用程序」 |
-| Windows x64（Windows 10 / 11） | `RKDevTool-Next_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
-| Linux x86_64（v0.1.9 之后的新版本） | `RKDevTool-Next_*_linux-x64.deb` / `.AppImage` | Debian 系用 `sudo apt install ./<文件名>.deb`；AppImage 添加执行权限后直接运行 |
+| macOS Apple Silicon（M 系列，macOS 11+） | `RKDevSuit_*_macos-arm64.dmg` | 打开 DMG，将 RKDevSuit 拖入「应用程序」 |
+| Windows x64（Windows 10 / 11） | `RKDevSuit_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
+| Linux x86_64（v0.1.9 之后的新版本） | `RKDevSuit_*_linux-x64.deb` / `.AppImage` | Debian 系用 `sudo apt install ./<文件名>.deb`；AppImage 添加执行权限后直接运行 |
 
 macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签名或公证；Windows 安装包未配置代码签名。系统可能显示安全提示，请确认安装包来自本仓库的 Release。
 
 **macOS 首次打开：** 将 App 拖入「应用程序」后，如果系统提示 Apple 无法验证此 App，且你已确认 DMG 来自本仓库的 Release，可以按 [Apple 的说明](https://support.apple.com/zh-cn/102445)在「隐私与安全性」中选择「仍要打开」，也可以在终端运行：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
+xattr -dr com.apple.quarantine "/Applications/RKDevSuit.app"
 ```
 
 这条命令只移除该 App 的下载隔离标记，不关闭系统的门禁。运行后重新打开 App。
@@ -77,7 +77,7 @@ xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
 
 ## 直接使用 CLI
 
-从 Release 下载并解压 `RKDevTool-Next-CLI` 后，在解压目录运行 `rkdevcli`，无需启动桌面或 MCP。下例使用 Bash；Windows PowerShell 的入口是 `.\rkdevcli.exe`。
+从 Release 下载并解压 `RKDevSuit-CLI` 后，在解压目录运行 `rkdevcli`，无需启动桌面或 MCP。下例使用 Bash；Windows PowerShell 的入口是 `.\rkdevcli.exe`。
 
 ```bash
 ./rkdevcli scan
@@ -89,6 +89,8 @@ mkdir -p ./output
 `scan` 将设备列表输出为 JSON。`inspect` 不访问 USB，将 RKFW/RKAF、RAW、MiniLoader 或 ZIP/gzip/xz/bzip2 中可用的镜像信息输出为 JSON。`unpack` 只解包 RKFW/RKAF：在已存在的 `./output` 下新建子目录，不覆盖文件，并输出新目录路径。
 
 从 v0.1.9 升级时，将脚本、快捷方式和 MCP 启动命令里的 `rkdevtool-next-cli` 改为 `rkdevcli`。命令参数和已生成的 MCP 客户端配置不变。
+
+> **MCP 与应用标识变更：** MCP 服务器标识和配置文件已分别更名为 `rkdevsuit` 与 `rkdevsuit.mcp.json`。升级后请在桌面应用重新生成配置或把客户端里的 `mcpServers.rkdevtool-next` 条目改为 `mcpServers.rkdevsuit`，并将 Skill 目录更新为 `skills/rkdevsuit`。应用 identifier 同步改为 `io.rkdevsuit.desktop`，桌面版升级后会使用新的本地数据目录，界面偏好等本地设置需要重新配置。
 
 烧录前，退出桌面应用和其他烧录工具，从 `scan` 输出取目标设备的 `id`。核对设备与固件并备份后，显式加 `--allow-flash`：
 
@@ -107,9 +109,9 @@ RAW 和独立 RKAF 需要设备已进入 Loader；直接烧录压缩包前须先
 
 1. 在桌面应用的「偏好设置 → MCP 服务器」勾选启用，点击「保存」。首次运行默认关闭。
 2. 点击「复制接入 Skill」，把它粘贴给运行在同一台电脑上的 Agent。Skill 包含 MCP 地址和本机配置路径，Agent 可据此完成注册并用只读调用验证连接。
-3. 也可以手动接入：服务使用 Streamable HTTP，地址是 `http://127.0.0.1:38471/mcp`。应用会在自己的数据目录自动生成 `rkdevtool-next.mcp.json`，无需选择保存位置。客户端可以导入其中的 `mcpServers.rkdevtool-next` 条目；例如 Claude Code 可用 `claude --mcp-config "<配置文件路径>"`。
+3. 也可以手动接入：服务使用 Streamable HTTP，地址是 `http://127.0.0.1:38471/mcp`。应用会在自己的数据目录自动生成 `rkdevsuit.mcp.json`，无需选择保存位置。客户端可以导入其中的 `mcpServers.rkdevsuit` 条目；例如 Claude Code 可用 `claude --mcp-config "<配置文件路径>"`。
 
-[接入 Skill 源码](skills/rkdevtool-next/SKILL.md)不含密钥。若要撤销旧配置，关闭服务后在「高级设置」重置密钥，再开启服务并重新接入。
+[接入 Skill 源码](skills/rkdevsuit/SKILL.md)不含密钥。若要撤销旧配置，关闭服务后在「高级设置」重置密钥，再开启服务并重新接入。
 
 在「偏好设置 → MCP 服务器」选择授权模式。读取设备信息等只读操作不弹授权框。
 
@@ -136,12 +138,12 @@ macOS 和 Windows 上，MCP 写操作优先于本地文件选择：如果正在�
 
 ### Codex 桌面还未注册服务器
 
-在运行 RKDevTool Next 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
+在运行 RKDevSuit 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
 
 ```bash
-config="/实际路径/rkdevtool-next.mcp.json"
-npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.get_runtime_info
-npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
+config="/实际路径/rkdevsuit.mcp.json"
+npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.get_runtime_info
+npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.scan_devices
 ```
 
 这不会向 Codex 注册服务器，也无需读取或传递授权头。用相同方式调用 `start_operation` 时，可加 `--timeout 120000` 等待桌面批准，再用返回的 `jobId` 调用 `get_operation` 查询进度；超时后不要直接重复提交。
@@ -151,7 +153,7 @@ npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
 从 Release 下载并解压对应平台的 CLI。退出桌面版和其他可能占用 USB 的烧录工具，在运行 MCP 客户端的同一台电脑上执行：
 
 ```bash
-./rkdevcli serve --state-dir ./rkdevtool-headless
+./rkdevcli serve --state-dir ./rkdevsuit-headless
 ```
 
 默认只读。需要无人值守烧录时，停止服务，再在启动命令后加 `--allow-flash`。这只放开烧录（包括请求的烧录后重启）；烧录会覆盖数据，请先备份。全权限无人值守仅在桌面版提供，擦除等其他写操作不会从 CLI 的 MCP 执行。服务只监听 `127.0.0.1:38471`，启动时打印配置文件路径，沿用上面的客户端接入方式；密钥不会打印。使用独立的私有状态目录，不与桌面版共享。按 Ctrl+C 停止接收新请求；正在烧录时，CLI 会等到任务结束再退出。
@@ -232,7 +234,7 @@ Linux 源码构建需安装 WebKitGTK 4.1、OpenSSL、AppIndicator、librsvg、p
 package.json
 package-lock.json（顶层与根 package）
 src-tauri/Cargo.toml
-src-tauri/Cargo.lock（rkdevtool-next package）
+src-tauri/Cargo.lock（rkdevsuit package）
 src-tauri/tauri.conf.json
 ```
 
@@ -260,7 +262,7 @@ scripts/                本机构建与版本一致性检查
 
 ## 致谢与许可证
 
-特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RKDevTool Next 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
+特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RKDevSuit 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
 
 同时感谢 [rockchip-linux/rkdeveloptool](https://github.com/rockchip-linux/rkdeveloptool)、[rockchip-linux/u-boot](https://github.com/rockchip-linux/u-boot)、[Collabora rockchiprs（rockusb / rockfile）](https://github.com/collabora/rockchiprs)、[nusb](https://github.com/kevinmehall/nusb) 和 [Tauri](https://github.com/tauri-apps/tauri) 等开源项目。各项目在本项目中的用途见 [致谢](ACKNOWLEDGEMENTS.md)。
 

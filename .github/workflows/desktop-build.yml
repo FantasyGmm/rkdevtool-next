@@ -76,7 +76,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
-          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevTool Next.app"
+          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevSuit.app"
           hdiutil verify src-tauri/target/"$BUILD_TARGET"/release/bundle/dmg/*.dmg
       - name: Collect installers
         env:
@@ -94,11 +94,11 @@ jobs:
               echo "Expected exactly one nonempty .$extension installer in $bundle_root/$bundle_dir" >&2
               exit 1
             fi
-            cp "${files[0]}" "release/RKDevTool-Next_${version}_${suffix}"
+            cp "${files[0]}" "release/RKDevSuit_${version}_${suffix}"
           done <<< "$PACKAGES"
       - uses: actions/upload-artifact@v7
         with:
-          name: RKDevTool-Next-${{ matrix.platform }}
+          name: RKDevSuit-${{ matrix.platform }}
           path: release/*
           if-no-files-found: error
           retention-days: 14
@@ -156,7 +156,7 @@ jobs:
         run: |
           version="$(node -p 'require("./package.json").version')"
           mkdir -p release
-          tar -czf "release/RKDevTool-Next-CLI_${version}_${PLATFORM}.tar.gz" \
+          tar -czf "release/RKDevSuit-CLI_${version}_${PLATFORM}.tar.gz" \
             -C "src-tauri/target/$BUILD_TARGET/release" "$CLI_BINARY"
       - name: Package Windows CLI
         if: runner.os == 'Windows'
@@ -169,10 +169,10 @@ jobs:
           $version = node -p 'require("./package.json").version'
           New-Item -ItemType Directory -Force release | Out-Null
           Compress-Archive -LiteralPath "src-tauri/target/$env:BUILD_TARGET/release/$env:CLI_BINARY" `
-            -DestinationPath "release/RKDevTool-Next-CLI_${version}_$env:PLATFORM.zip"
+            -DestinationPath "release/RKDevSuit-CLI_${version}_$env:PLATFORM.zip"
       - uses: actions/upload-artifact@v7
         with:
-          name: RKDevTool-Next-CLI-${{ matrix.platform }}
+          name: RKDevSuit-CLI-${{ matrix.platform }}
           path: release/*
           if-no-files-found: error
           retention-days: 14
@@ -188,7 +188,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: RKDevTool-Next-*
+          pattern: RKDev*-*
           path: release
           merge-multiple: true
       - name: Publish complete GUI and CLI asset set
@@ -201,13 +201,13 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           assets=(
-            "release/RKDevTool-Next_${version}_macos-arm64.dmg"
-            "release/RKDevTool-Next_${version}_windows-x64-setup.exe"
-            "release/RKDevTool-Next_${version}_linux-x64.deb"
-            "release/RKDevTool-Next_${version}_linux-x64.AppImage"
-            "release/RKDevTool-Next-CLI_${version}_macos-arm64.tar.gz"
-            "release/RKDevTool-Next-CLI_${version}_windows-x64.zip"
-            "release/RKDevTool-Next-CLI_${version}_linux-x64.tar.gz"
+            "release/RKDevSuit_${version}_macos-arm64.dmg"
+            "release/RKDevSuit_${version}_windows-x64-setup.exe"
+            "release/RKDevSuit_${version}_linux-x64.deb"
+            "release/RKDevSuit_${version}_linux-x64.AppImage"
+            "release/RKDevSuit-CLI_${version}_macos-arm64.tar.gz"
+            "release/RKDevSuit-CLI_${version}_windows-x64.zip"
+            "release/RKDevSuit-CLI_${version}_linux-x64.tar.gz"
           )
           for asset in "${assets[@]}"; do
             [[ -s "$asset" ]] || { echo "Missing asset: $asset" >&2; exit 1; }
@@ -217,7 +217,7 @@ jobs:
           - **macos-arm64.dmg**：Apple Silicon（M 系列）Mac
           - **windows-x64-setup.exe**：Windows x64 安装程序
           - **linux-x64.deb / linux-x64.AppImage**：Linux x86_64 桌面版；Debian 系可选 `.deb`，免安装可选 `.AppImage`。USB 访问需配置本机 udev 权限。
-          - **RKDevTool-Next-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。入口已更名为 `rkdevcli`（Windows 为 `rkdevcli.exe`）；升级时请更新脚本和 MCP 启动命令。无需 GUI；烧录需显式启用 `--allow-flash`。
+          - **RKDevSuit-CLI**：macOS arm64、Windows x64、Linux x64 命令行版。CLI 分发名已更名为 `RKDevSuit-CLI`，入口为 `rkdevcli`（Windows 为 `rkdevcli.exe`）；升级时请更新脚本和 MCP 启动命令。无需 GUI；烧录需显式启用 `--allow-flash`。
 
           macOS 包使用 ad-hoc 签名，未经过 Apple 公证；Windows 包尚未配置代码签名，系统可能显示安全提示。Windows USB 通信需要目标 Rockusb 接口使用 WinUSB。
 
@@ -227,7 +227,7 @@ jobs:
             [[ "$draft" == true ]] || { echo 'Release already published; use a new version instead of replacing it.' >&2; exit 1; }
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "RKDevTool Next $RELEASE_TAG" --notes-file release-notes.md
+              --title "RKDevSuit $RELEASE_TAG" --notes-file release-notes.md
           fi
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

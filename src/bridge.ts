@@ -248,7 +248,7 @@ export const api = {
     if (native) {
       const path = await choosePath({
         kind: "save",
-        name: `rkdevtool-next-${new Date().toISOString().slice(0, 10)}.log`,
+        name: `rkdevsuit-${new Date().toISOString().slice(0, 10)}.log`,
         log: true,
       });
       if (path) await invoke("export_logs", { path, contents });
@@ -258,7 +258,7 @@ export const api = {
       );
       const a = document.createElement("a");
       a.href = url;
-      a.download = "rkdevtool-next.log";
+      a.download = "rkdevsuit.log";
       a.click();
       URL.revokeObjectURL(url);
     }

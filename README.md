@@ -77,7 +77,7 @@ xattr -dr com.apple.quarantine "/Applications/RKDevSuit.app"
 
 ## 直接使用 CLI
 
-从 Release 下载并解压 `RKDevTool-Next-CLI` 后，在解压目录运行 `rkdevcli`，无需启动桌面或 MCP。下例使用 Bash；Windows PowerShell 的入口是 `.\rkdevcli.exe`。
+从 Release 下载并解压 `RKDevSuit-CLI` 后，在解压目录运行 `rkdevcli`，无需启动桌面或 MCP。下例使用 Bash；Windows PowerShell 的入口是 `.\rkdevcli.exe`。
 
 ```bash
 ./rkdevcli scan

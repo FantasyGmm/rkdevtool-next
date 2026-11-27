@@ -153,7 +153,7 @@ npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.scan_devices
 从 Release 下载并解压对应平台的 CLI。退出桌面版和其他可能占用 USB 的烧录工具，在运行 MCP 客户端的同一台电脑上执行：
 
 ```bash
-./rkdevcli serve --state-dir ./rkdevtool-headless
+./rkdevcli serve --state-dir ./rkdevsuit-headless
 ```
 
 默认只读。需要无人值守烧录时，停止服务，再在启动命令后加 `--allow-flash`。这只放开烧录（包括请求的烧录后重启）；烧录会覆盖数据，请先备份。全权限无人值守仅在桌面版提供，擦除等其他写操作不会从 CLI 的 MCP 执行。服务只监听 `127.0.0.1:38471`，启动时打印配置文件路径，沿用上面的客户端接入方式；密钥不会打印。使用独立的私有状态目录，不与桌面版共享。按 Ctrl+C 停止接收新请求；正在烧录时，CLI 会等到任务结束再退出。

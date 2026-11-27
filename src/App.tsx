@@ -68,7 +68,7 @@ import type {
 } from "./types";
 
 type Page = "flash" | "partitions" | "advanced";
-const PREFERENCES_STORAGE_KEY = "rkdevtool-next-preferences";
+const PREFERENCES_STORAGE_KEY = "rkdevsuit-preferences";
 type LogLine = { id: number; time: string; level: OperationEvent["level"]; text: string };
 type Preferences = {
   reboot: boolean;

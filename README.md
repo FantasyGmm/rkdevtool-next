@@ -90,7 +90,7 @@ mkdir -p ./output
 
 从 v0.1.9 升级时，将脚本、快捷方式和 MCP 启动命令里的 `rkdevtool-next-cli` 改为 `rkdevcli`。命令参数和已生成的 MCP 客户端配置不变。
 
-> **MCP 标识变更：** MCP 服务器标识和配置文件已分别更名为 `rkdevsuit` 与 `rkdevsuit.mcp.json`。升级后请在桌面应用重新生成配置或把客户端里的 `mcpServers.rkdevtool-next` 条目改为 `mcpServers.rkdevsuit`，并将 Skill 目录更新为 `skills/rkdevsuit`。
+> **MCP 与应用标识变更：** MCP 服务器标识和配置文件已分别更名为 `rkdevsuit` 与 `rkdevsuit.mcp.json`。升级后请在桌面应用重新生成配置或把客户端里的 `mcpServers.rkdevtool-next` 条目改为 `mcpServers.rkdevsuit`，并将 Skill 目录更新为 `skills/rkdevsuit`。应用 identifier 同步改为 `io.rkdevsuit.desktop`，桌面版升级后会使用新的本地数据目录，界面偏好等本地设置需要重新配置。
 
 烧录前，退出桌面应用和其他烧录工具，从 `scan` 输出取目标设备的 `id`。核对设备与固件并备份后，显式加 `--allow-flash`：
 

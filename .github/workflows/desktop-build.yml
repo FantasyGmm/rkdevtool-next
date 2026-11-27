@@ -98,7 +98,7 @@ jobs:
           done <<< "$PACKAGES"
       - uses: actions/upload-artifact@v7
         with:
-          name: RKDevTool-Next-${{ matrix.platform }}
+          name: RKDevSuit-${{ matrix.platform }}
           path: release/*
           if-no-files-found: error
           retention-days: 14
@@ -188,7 +188,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: RKDevTool-Next-*
+          pattern: RKDev*-*
           path: release
           merge-multiple: true
       - name: Publish complete GUI and CLI asset set

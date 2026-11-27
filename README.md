@@ -232,7 +232,7 @@ Linux 源码构建需安装 WebKitGTK 4.1、OpenSSL、AppIndicator、librsvg、p
 package.json
 package-lock.json（顶层与根 package）
 src-tauri/Cargo.toml
-src-tauri/Cargo.lock（rkdevtool-next package）
+src-tauri/Cargo.lock（rkdevsuit package）
 src-tauri/tauri.conf.json
 ```
 

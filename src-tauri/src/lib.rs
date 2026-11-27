@@ -227,7 +227,7 @@ pub fn run() {
             mcp::save_mcp_settings
         ])
         .build(tauri::generate_context!())
-        .expect("RKDevTool Next failed to initialize");
+        .expect("RKDevSuit failed to initialize");
     app.run(|app, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
             let state = app.state::<Arc<Backend>>();

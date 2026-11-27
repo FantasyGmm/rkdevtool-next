@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="public/icon.png" width="96" alt="RKDevTool Next logo" />
+  <img src="public/icon.png" width="96" alt="RKDevSuit logo" />
 </p>
 
-<h1 align="center">RKDevTool Next</h1>
+<h1 align="center">RKDevSuit</h1>
 
 <p align="center">面向 Rockchip 开发板的原生烧录工作台</p>
 <p align="center">
@@ -11,7 +11,7 @@
   <a href="https://github.com/FantasyGmm/rkdevtool-next/issues">反馈问题</a>
 </p>
 
-RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
+RKDevSuit 是社区维护的跨平台 Rockchip 烧录工具，使用 **Tauri 2 + React / TypeScript + Rust**，将固件选择、Loader 下载、分区管理和运行日志整合到一个桌面窗口中。USB 通信和固件处理在本机完成，运行时不依赖 Python、Qt 或外部 `rkdeveloptool`。
 
 ## 界面预览
 
@@ -19,15 +19,15 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 
 ### 烧录
 
-![RKDevTool Next 烧录页面，展示固件选择、设备详情和运行日志](docs/images/flash.jpg)
+![RKDevSuit 烧录页面，展示固件选择、设备详情和运行日志](docs/images/flash.jpg)
 
 ### 分区
 
-![RKDevTool Next 分区页面，展示分区列表和分区操作](docs/images/partitions.jpg)
+![RKDevSuit 分区页面，展示分区列表和分区操作](docs/images/partitions.jpg)
 
 ### 高级工具
 
-![RKDevTool Next 高级工具页面，展示设备管理和存储操作](docs/images/advanced.jpg)
+![RKDevSuit 高级工具页面，展示设备管理和存储操作](docs/images/advanced.jpg)
 
 ## 下载与安装
 
@@ -35,16 +35,16 @@ RKDevTool Next 是社区维护的跨平台 Rockchip 烧录工具，使用 **Taur
 
 | 平台 | 文件 | 安装方式 |
 | --- | --- | --- |
-| macOS Apple Silicon（M 系列，macOS 11+） | `RKDevTool-Next_*_macos-arm64.dmg` | 打开 DMG，将 RKDevTool Next 拖入「应用程序」 |
-| Windows x64（Windows 10 / 11） | `RKDevTool-Next_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
-| Linux x86_64（v0.1.9 之后的新版本） | `RKDevTool-Next_*_linux-x64.deb` / `.AppImage` | Debian 系用 `sudo apt install ./<文件名>.deb`；AppImage 添加执行权限后直接运行 |
+| macOS Apple Silicon（M 系列，macOS 11+） | `RKDevSuit_*_macos-arm64.dmg` | 打开 DMG，将 RKDevSuit 拖入「应用程序」 |
+| Windows x64（Windows 10 / 11） | `RKDevSuit_*_windows-x64-setup.exe` | 运行安装程序；按提示安装 WebView2 运行时 |
+| Linux x86_64（v0.1.9 之后的新版本） | `RKDevSuit_*_linux-x64.deb` / `.AppImage` | Debian 系用 `sudo apt install ./<文件名>.deb`；AppImage 添加执行权限后直接运行 |
 
 macOS 使用无需证书的 ad-hoc 本地签名，未配置 Apple Developer 签名或公证；Windows 安装包未配置代码签名。系统可能显示安全提示，请确认安装包来自本仓库的 Release。
 
 **macOS 首次打开：** 将 App 拖入「应用程序」后，如果系统提示 Apple 无法验证此 App，且你已确认 DMG 来自本仓库的 Release，可以按 [Apple 的说明](https://support.apple.com/zh-cn/102445)在「隐私与安全性」中选择「仍要打开」，也可以在终端运行：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/RKDevTool Next.app"
+xattr -dr com.apple.quarantine "/Applications/RKDevSuit.app"
 ```
 
 这条命令只移除该 App 的下载隔离标记，不关闭系统的门禁。运行后重新打开 App。
@@ -136,7 +136,7 @@ macOS 和 Windows 上，MCP 写操作优先于本地文件选择：如果正在�
 
 ### Codex 桌面还未注册服务器
 
-在运行 RKDevTool Next 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
+在运行 RKDevSuit 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
 
 ```bash
 config="/实际路径/rkdevtool-next.mcp.json"
@@ -260,7 +260,7 @@ scripts/                本机构建与版本一致性检查
 
 ## 致谢与许可证
 
-特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RKDevTool Next 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
+特别感谢 **[gahingwoo / RKDevelopTool-GUI](https://github.com/gahingwoo/RKDevelopTool-GUI)**。RKDevSuit 的烧录工作流、固件处理与交互组织参考了该项目，并以 Tauri / Rust 实现原生桌面版本。
 
 同时感谢 [rockchip-linux/rkdeveloptool](https://github.com/rockchip-linux/rkdeveloptool)、[rockchip-linux/u-boot](https://github.com/rockchip-linux/u-boot)、[Collabora rockchiprs（rockusb / rockfile）](https://github.com/collabora/rockchiprs)、[nusb](https://github.com/kevinmehall/nusb) 和 [Tauri](https://github.com/tauri-apps/tauri) 等开源项目。各项目在本项目中的用途见 [致谢](ACKNOWLEDGEMENTS.md)。
 

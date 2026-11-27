@@ -76,7 +76,7 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
-          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevTool Next.app"
+          codesign --verify --deep --strict "src-tauri/target/$BUILD_TARGET/release/bundle/macos/RKDevSuit.app"
           hdiutil verify src-tauri/target/"$BUILD_TARGET"/release/bundle/dmg/*.dmg
       - name: Collect installers
         env:
@@ -94,7 +94,7 @@ jobs:
               echo "Expected exactly one nonempty .$extension installer in $bundle_root/$bundle_dir" >&2
               exit 1
             fi
-            cp "${files[0]}" "release/RKDevTool-Next_${version}_${suffix}"
+            cp "${files[0]}" "release/RKDevSuit_${version}_${suffix}"
           done <<< "$PACKAGES"
       - uses: actions/upload-artifact@v7
         with:
@@ -201,10 +201,10 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           assets=(
-            "release/RKDevTool-Next_${version}_macos-arm64.dmg"
-            "release/RKDevTool-Next_${version}_windows-x64-setup.exe"
-            "release/RKDevTool-Next_${version}_linux-x64.deb"
-            "release/RKDevTool-Next_${version}_linux-x64.AppImage"
+            "release/RKDevSuit_${version}_macos-arm64.dmg"
+            "release/RKDevSuit_${version}_windows-x64-setup.exe"
+            "release/RKDevSuit_${version}_linux-x64.deb"
+            "release/RKDevSuit_${version}_linux-x64.AppImage"
             "release/RKDevTool-Next-CLI_${version}_macos-arm64.tar.gz"
             "release/RKDevTool-Next-CLI_${version}_windows-x64.zip"
             "release/RKDevTool-Next-CLI_${version}_linux-x64.tar.gz"
@@ -227,7 +227,7 @@ jobs:
             [[ "$draft" == true ]] || { echo 'Release already published; use a new version instead of replacing it.' >&2; exit 1; }
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "RKDevTool Next $RELEASE_TAG" --notes-file release-notes.md
+              --title "RKDevSuit $RELEASE_TAG" --notes-file release-notes.md
           fi
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

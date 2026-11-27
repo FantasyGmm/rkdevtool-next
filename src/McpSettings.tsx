@@ -48,7 +48,7 @@ export function McpSettings({ status, draft, saving, loadError, reload, change }
     <section className="settings-group mcp-settings" aria-labelledby="mcp-settings-title">
       <h3 id="mcp-settings-title">MCP 服务器</h3>
       {!native ? (
-        <p>仅在 RKDevTool Next 桌面版可用。</p>
+        <p>仅在 RKDevSuit 桌面版可用。</p>
       ) : (
         <>
           <label className="settings-checkbox">

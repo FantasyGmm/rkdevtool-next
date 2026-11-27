@@ -1,9 +1,9 @@
 ---
 name: rkdevtool-next
-description: Connect to RKDevTool Next over local MCP from the desktop app or rkdevcli to inspect Rockchip hardware and firmware, flash, or use desktop recovery tools.
+description: Connect to RKDevSuit over local MCP from the desktop app or rkdevcli to inspect Rockchip hardware and firmware, flash, or use desktop recovery tools.
 ---
 
-# RKDevTool Next
+# RKDevSuit
 
 ## Connect and verify
 

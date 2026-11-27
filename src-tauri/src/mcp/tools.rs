@@ -29,7 +29,7 @@ use tokio::sync::{OwnedSemaphorePermit, oneshot};
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct FileArgs {
-    /// Absolute file path on the computer running RKDevTool Next.
+    /// Absolute file path on the computer running RKDevSuit.
     path: String,
 }
 
@@ -317,13 +317,13 @@ impl Tools {
         result(outcome)
     }
 
-    #[tool(description = "Read persisted RKDevTool Next job history, newest first.")]
+    #[tool(description = "Read persisted RKDevSuit job history, newest first.")]
     fn get_history(&self) -> CallToolResult {
         result(self.backend.history())
     }
 
     #[tool(
-        description = "Read recent backend task logs from this RKDevTool Next session, optionally filtered by jobId."
+        description = "Read recent backend task logs from this RKDevSuit session, optionally filtered by jobId."
     )]
     fn get_logs(&self, Parameters(args): Parameters<LogArgs>) -> CallToolResult {
         let limit = args.limit.unwrap_or(100);
@@ -380,7 +380,7 @@ impl Tools {
         result(outcome)
     }
 
-    #[tool(description = "Report the RKDevTool Next version, OS, architecture and USB backend.")]
+    #[tool(description = "Report the RKDevSuit version, OS, architecture and USB backend.")]
     fn get_runtime_info(&self) -> CallToolResult {
         result(Ok(crate::get_runtime_info()))
     }
@@ -392,12 +392,12 @@ impl ServerHandler for Tools {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
                 Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-                    .with_title("RKDevTool Next"),
+                    .with_title("RKDevSuit"),
             )
             .with_instructions(if self.host.is_headless() {
-                "Headless RKDevTool Next. Scan before addressing a device. The server is read-only unless started with --allow-flash, which permits flash jobs only. Poll get_operation for job progress."
+                "Headless RKDevSuit. Scan before addressing a device. The server is read-only unless started with --allow-flash, which permits flash jobs only. Poll get_operation for job progress."
             } else {
-                "Local RKDevTool Next desktop tools. Scan before addressing a device. By default, changes and exports require desktop approval. The local policy can allow only flash jobs, or all supported operations, without prompts. Poll get_operation for job progress."
+                "Local RKDevSuit desktop tools. Scan before addressing a device. By default, changes and exports require desktop approval. The local policy can allow only flash jobs, or all supported operations, without prompts. Poll get_operation for job progress."
             }.to_string())
     }
 }
@@ -623,12 +623,12 @@ impl Tools {
     ) -> Result<(), String> {
         let window = app
             .get_webview_window("main")
-            .ok_or("请先打开 RKDevTool Next 主窗口。")?;
+            .ok_or("请先打开 RKDevSuit 主窗口。")?;
         let (tx, rx) = oneshot::channel();
         app.dialog()
             .message(message)
             .parent(&window)
-            .title("批准 RKDevTool Next MCP 请求？")
+            .title("批准 RKDevSuit MCP 请求？")
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancelCustom(
                 "批准".into(),
@@ -655,7 +655,7 @@ impl Tools {
 fn absolute_path(path: &str) -> Result<std::path::PathBuf, String> {
     let path = Path::new(path);
     if !path.is_absolute() || path.file_name().is_none() {
-        return Err("请提供运行 RKDevTool Next 的计算机上的绝对文件路径。".into());
+        return Err("请提供运行 RKDevSuit 的计算机上的绝对文件路径。".into());
     }
     Ok(path.to_path_buf())
 }

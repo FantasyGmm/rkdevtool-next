@@ -2810,7 +2810,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rkdevtool-next"
+name = "rkdevsuit"
 version = "0.1.9"
 dependencies = [
  "axum",

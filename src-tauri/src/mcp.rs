@@ -35,7 +35,7 @@ const PORT: u16 = 38471;
 const HOST: &str = "127.0.0.1:38471";
 const ORIGIN: &str = "http://127.0.0.1:38471";
 const ENDPOINT: &str = "http://127.0.0.1:38471/mcp";
-const CLIENT_CONFIG_NAME: &str = "rkdevtool-next.mcp.json";
+const CLIENT_CONFIG_NAME: &str = "rkdevsuit.mcp.json";
 #[cfg(feature = "headless-cli")]
 pub(crate) const UNATTENDED_FLASH_WARNING: &str = "Back up data and verify the target device and firmware before unattended flashing. An incorrect or interrupted write can leave the device unbootable.";
 
@@ -252,7 +252,7 @@ fn new_token() -> String {
 fn write_client_config(path: &Path, token: &str) -> Result<(), String> {
     let config = json!({
         "mcpServers": {
-            "rkdevtool-next": {
+            "rkdevsuit": {
                 "type": "http",
                 "url": ENDPOINT,
                 "headers": { "Authorization": format!("Bearer {token}") }

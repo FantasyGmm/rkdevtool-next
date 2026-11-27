@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Copy, RefreshCw } from "lucide-react";
 import { native } from "./bridge";
 import type { McpFlashApproval, McpSettingsDraft, McpStatus } from "./types";
-import skill from "../skills/rkdevtool-next/SKILL.md?raw";
+import skill from "../skills/rkdevsuit/SKILL.md?raw";
 
 async function copyText(text: string): Promise<boolean> {
   try {

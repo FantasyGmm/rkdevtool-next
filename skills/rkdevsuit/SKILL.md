@@ -1,5 +1,5 @@
 ---
-name: rkdevtool-next
+name: rkdevsuit
 description: Connect to RKDevSuit over local MCP from the desktop app or rkdevcli to inspect Rockchip hardware and firmware, flash, or use desktop recovery tools.
 ---
 
@@ -11,9 +11,9 @@ description: Connect to RKDevSuit over local MCP from the desktop app or rkdevcl
 2. Use the registered tools if available, or import the generated JSON with a client that supports it (e.g. `claude --mcp-config <file>`). If Codex desktop has not registered the server, call it from a terminal on the same computer with MCPorter 0.17.0 (Node.js 24+):
 
    ```bash
-   config="/absolute/path/to/rkdevtool-next.mcp.json"
-   npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.get_runtime_info
-   npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
+   config="/absolute/path/to/rkdevsuit.mcp.json"
+   npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.get_runtime_info
+   npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.scan_devices
    ```
 
    MCPorter reads the config directly; do not extract or pass the authorization header yourself. If the terminal cannot reach the host's loopback interface, explain the blocker; do not create a tunnel.

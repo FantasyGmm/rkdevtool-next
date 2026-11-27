@@ -90,6 +90,8 @@ mkdir -p ./output
 
 从 v0.1.9 升级时，将脚本、快捷方式和 MCP 启动命令里的 `rkdevtool-next-cli` 改为 `rkdevcli`。命令参数和已生成的 MCP 客户端配置不变。
 
+> **MCP 标识变更：** MCP 服务器标识和配置文件已分别更名为 `rkdevsuit` 与 `rkdevsuit.mcp.json`。升级后请在桌面应用重新生成配置或把客户端里的 `mcpServers.rkdevtool-next` 条目改为 `mcpServers.rkdevsuit`，并将 Skill 目录更新为 `skills/rkdevsuit`。
+
 烧录前，退出桌面应用和其他烧录工具，从 `scan` 输出取目标设备的 `id`。核对设备与固件并备份后，显式加 `--allow-flash`：
 
 ```bash
@@ -107,9 +109,9 @@ RAW 和独立 RKAF 需要设备已进入 Loader；直接烧录压缩包前须先
 
 1. 在桌面应用的「偏好设置 → MCP 服务器」勾选启用，点击「保存」。首次运行默认关闭。
 2. 点击「复制接入 Skill」，把它粘贴给运行在同一台电脑上的 Agent。Skill 包含 MCP 地址和本机配置路径，Agent 可据此完成注册并用只读调用验证连接。
-3. 也可以手动接入：服务使用 Streamable HTTP，地址是 `http://127.0.0.1:38471/mcp`。应用会在自己的数据目录自动生成 `rkdevtool-next.mcp.json`，无需选择保存位置。客户端可以导入其中的 `mcpServers.rkdevtool-next` 条目；例如 Claude Code 可用 `claude --mcp-config "<配置文件路径>"`。
+3. 也可以手动接入：服务使用 Streamable HTTP，地址是 `http://127.0.0.1:38471/mcp`。应用会在自己的数据目录自动生成 `rkdevsuit.mcp.json`，无需选择保存位置。客户端可以导入其中的 `mcpServers.rkdevsuit` 条目；例如 Claude Code 可用 `claude --mcp-config "<配置文件路径>"`。
 
-[接入 Skill 源码](skills/rkdevtool-next/SKILL.md)不含密钥。若要撤销旧配置，关闭服务后在「高级设置」重置密钥，再开启服务并重新接入。
+[接入 Skill 源码](skills/rkdevsuit/SKILL.md)不含密钥。若要撤销旧配置，关闭服务后在「高级设置」重置密钥，再开启服务并重新接入。
 
 在「偏好设置 → MCP 服务器」选择授权模式。读取设备信息等只读操作不弹授权框。
 
@@ -139,9 +141,9 @@ macOS 和 Windows 上，MCP 写操作优先于本地文件选择：如果正在�
 在运行 RKDevSuit 的同一台电脑上，用 [MCPorter 0.17.0](https://github.com/openclaw/mcporter/blob/v0.17.0/docs/cli-reference.md)（需 Node.js 24+）直接使用「复制接入 Skill」给出的本机配置路径：
 
 ```bash
-config="/实际路径/rkdevtool-next.mcp.json"
-npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.get_runtime_info
-npx --yes mcporter@0.17.0 --config "$config" call rkdevtool-next.scan_devices
+config="/实际路径/rkdevsuit.mcp.json"
+npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.get_runtime_info
+npx --yes mcporter@0.17.0 --config "$config" call rkdevsuit.scan_devices
 ```
 
 这不会向 Codex 注册服务器，也无需读取或传递授权头。用相同方式调用 `start_operation` 时，可加 `--timeout 120000` 等待桌面批准，再用返回的 `jobId` 调用 `get_operation` 查询进度；超时后不要直接重复提交。
